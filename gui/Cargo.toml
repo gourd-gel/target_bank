@@ -1,0 +1,35 @@
+# Desktop GUI for the Bank of CCNY ATM (Slint).
+#
+# A separate crate on purpose: it depends on the bank core (`..`) exactly like
+# the CLI does, so every rule is enforced in the core, never here.
+[package]
+name = "atm-gui"
+version = "0.9.0"
+edition = "2024"
+rust-version = "1.92"
+
+[[bin]]
+name = "atm-gui"
+path = "src/main.rs"
+
+[features]
+# Same demo data as the CLI: cargo run -p atm-gui --features demo -- --demo
+demo = ["atm/demo"]
+# TEST BUILDS ONLY: adds `--demo --break-integrity` (see the core's Cargo.toml).
+integrity-test = ["demo", "atm/integrity-test"]
+
+[dependencies]
+# online-rates: the teller's "Check today's rates" button (one HTTPS request).
+atm = { path = "..", features = ["online-rates"] }
+# Only the Slint parts this GUI uses (both renderers kept, so it looks the same).
+slint = { version = "1.18", default-features = false, features = ["std", "backend-winit", "renderer-femtovg", "renderer-software", "compat-1-2"] }
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
+chrono-tz = "0.10.4"
+zeroize = "1.8"
+
+[build-dependencies]
+slint-build = "1.18"
+
+[lints.rust]
+# "deny", not "forbid": Slint's generated code needs a local allow.
+unsafe_code = "deny"

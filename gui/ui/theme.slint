@@ -1,0 +1,574 @@
+// Colours, type sizes and reusable widgets for every screen.
+// Change a colour here and the whole ATM follows.
+
+import { ListView } from "std-widgets.slint";
+
+export global Palette {
+    // CCNY's official colors (CCNY Style Guide, 2026): purple PMS 2665C,
+    // gray PMS 425C and white; gold PMS 129C and red PMS 1807C are official
+    // secondary colors. The darker purple and the tints are shades of these.
+    out property <color> brand: #7d55c7;       // CCNY purple (PMS 2665C)
+    out property <color> brand-dark: #5b3a9e;  // deeper shade, for text and the header
+    out property <color> brand-soft: #f1ecfa;  // light tint, for hover and highlights
+    out property <color> gold: #f3d03e;        // CCNY gold (PMS 129C)
+    out property <color> gray: #545859;        // CCNY gray (PMS 425C)
+
+    out property <color> page: #f5f5f6;
+    out property <color> card: #ffffff;
+    out property <color> line: #dcdcdf;
+    out property <color> ink: #1f2123;
+    out property <color> body: #545859;        // CCNY gray
+    out property <color> faint: #85898b;
+
+    out property <color> ok: #1f7a4d;
+    out property <color> ok-soft: #e6f4ec;
+    out property <color> bad: #a4343a;         // CCNY red (PMS 1807C)
+    out property <color> bad-soft: #f8e9ea;
+    out property <color> warn: #9a6a00;
+    out property <color> warn-soft: #fdf6dc;
+}
+
+export global Type {
+    out property <length> hero: 40px;
+    out property <length> title: 32px;
+    out property <length> subtitle: 18px;
+    out property <length> body: 17px;
+    out property <length> small: 14px;
+}
+
+// ---------------------------------------------------------------------------
+// Buttons
+// ---------------------------------------------------------------------------
+
+/// A big option button at the edge of the screen, like the keys beside a real
+/// ATM display. The arrow points toward the edge it sits on.
+
+export global Shape {
+    out property <length> corner: 2px;   // 0px = fully square
+}
+export component EdgeButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> right-side;
+    in property <bool> enabled: true;
+    callback clicked;
+
+    height: 76px;
+    min-width: 260px;
+    preferred-width: 320px;
+    border-radius: Shape.corner;
+    border-width: touch.has-hover && enabled ? 2px : 1px;
+    border-color: touch.has-hover && enabled ? Palette.brand : Palette.line;
+    background: !enabled ? #f6f5f9 : touch.pressed ? Palette.brand-soft.darker(0.04) : touch.has-hover ? Palette.brand-soft : Palette.card;
+    drop-shadow-blur: 0px;
+    drop-shadow-offset-y: 2px;
+    drop-shadow-color: #1e143014;
+
+    HorizontalLayout {
+        padding-left: 22px;
+        padding-right: 22px;
+        spacing: 12px;
+        if !root.right-side: Text {
+            text: "‹";
+            font-size: 30px;
+            color: root.enabled ? Palette.gold : Palette.line;
+            vertical-alignment: center;
+        }
+        Text {
+            text: root.text;
+            font-size: 21px;
+            font-weight: 650;
+            color: root.enabled ? Palette.brand-dark : Palette.faint;
+            vertical-alignment: center;
+            horizontal-alignment: root.right-side ? right : left;
+            horizontal-stretch: 1;
+        }
+        if root.right-side: Text {
+            text: "›";
+            font-size: 30px;
+            color: root.enabled ? Palette.gold : Palette.line;
+            vertical-alignment: center;
+        }
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => { root.clicked(); }
+    }
+}
+
+/// kind: 0 = primary (purple), 1 = secondary (outlined), 2 = danger (red text).
+export component ActionButton inherits Rectangle {
+    in property <string> text;
+    in property <int> kind: 0;
+    in property <bool> enabled: true;
+    in property <length> font-size: 18px;
+    callback clicked;
+
+    /// Narrower for short labels like "Save".
+    in property <length> narrowest: 150px;
+    min-width: narrowest;
+    height: 54px;
+    border-radius: 12px;
+    border-width: kind == 0 ? 0px : 1.5px;
+    border-color: kind == 2 ? Palette.bad : Palette.brand;
+    background: !enabled ? #e7e4ee
+        : kind == 0 ? (touch.pressed ? Palette.brand-dark : touch.has-hover ? Palette.brand.brighter(0.12) : Palette.brand)
+        : (touch.pressed ? Palette.brand-soft.darker(0.05) : touch.has-hover ? Palette.brand-soft : Palette.card);
+
+    HorizontalLayout {
+        padding-left: 22px;
+        padding-right: 22px;
+        Text {
+            text: root.text;
+            font-size: root.font-size;
+            font-weight: 650;
+            color: !root.enabled ? Palette.faint : root.kind == 0 ? white : root.kind == 2 ? Palette.bad : Palette.brand;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => { root.clicked(); }
+    }
+}
+
+/// A selectable tile, used for Fast Cash amounts and bill denominations.
+export component Tile inherits Rectangle {
+    in property <string> text;
+    in property <string> caption;
+    in property <bool> enabled: true;
+    callback clicked;
+
+    height: 96px;
+    min-width: 120px;
+    preferred-width: 220px;
+    border-radius: 14px;
+    border-width: touch.has-hover && enabled ? 2px : 1px;
+    border-color: touch.has-hover && enabled ? Palette.brand : Palette.line;
+    background: !enabled ? #f6f5f9 : touch.pressed ? Palette.brand-soft.darker(0.04) : touch.has-hover ? Palette.brand-soft : Palette.card;
+    drop-shadow-blur: 6px;
+    drop-shadow-offset-y: 2px;
+    drop-shadow-color: #1e143014;
+
+    VerticalLayout {
+        alignment: center;
+        spacing: 2px;
+        Text {
+            text: root.text;
+            font-size: 30px;
+            font-weight: 750;
+            color: root.enabled ? Palette.brand-dark : Palette.faint;
+            horizontal-alignment: center;
+        }
+        if root.caption != "": Text {
+            text: root.caption;
+            font-size: Type.small;
+            color: Palette.faint;
+            horizontal-alignment: center;
+        }
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => { root.clicked(); }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Keypad
+// ---------------------------------------------------------------------------
+
+component PadKey inherits Rectangle {
+    in property <string> text;
+    in property <color> fill: Palette.card;
+    in property <color> ink: Palette.ink;
+    in property <length> font-size: 26px;
+    callback clicked;
+
+    border-radius: 12px;
+    border-width: fill == Palette.card ? 1px : 0px;
+    border-color: Palette.line;
+    background: touch.pressed ? fill.darker(0.12) : touch.has-hover ? fill.darker(0.04) : fill;
+    drop-shadow-blur: 4px;
+    drop-shadow-offset-y: 2px;
+    drop-shadow-color: #1e143018;
+
+    Text {
+        text: root.text;
+        font-size: root.font-size;
+        font-weight: 650;
+        color: root.ink;
+    }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+/// Classic ATM keypad: digits left, Cancel / Clear / Enter right.
+export component Keypad inherits GridLayout {
+    callback key(string);
+    callback enter();
+    callback cancel();
+
+    spacing: 10px;
+    property <length> kw: 86px;
+    property <length> kh: 58px;
+
+    Row {
+        PadKey { width: kw; height: kh; text: "1"; clicked => { root.key("1"); } }
+        PadKey { width: kw; height: kh; text: "2"; clicked => { root.key("2"); } }
+        PadKey { width: kw; height: kh; text: "3"; clicked => { root.key("3"); } }
+        PadKey { width: 130px; height: kh; text: "Cancel"; font-size: 18px; fill: Palette.bad; ink: white; clicked => { root.cancel(); } }
+    }
+    Row {
+        PadKey { width: kw; height: kh; text: "4"; clicked => { root.key("4"); } }
+        PadKey { width: kw; height: kh; text: "5"; clicked => { root.key("5"); } }
+        PadKey { width: kw; height: kh; text: "6"; clicked => { root.key("6"); } }
+        PadKey { width: 130px; height: kh; text: "Clear"; font-size: 18px; fill: Palette.gold; ink: Palette.ink; clicked => { root.key("clear"); } }
+    }
+    Row {
+        PadKey { width: kw; height: kh; text: "7"; clicked => { root.key("7"); } }
+        PadKey { width: kw; height: kh; text: "8"; clicked => { root.key("8"); } }
+        PadKey { width: kw; height: kh; text: "9"; clicked => { root.key("9"); } }
+        PadKey { width: 130px; height: kh; text: "Enter"; font-size: 18px; fill: Palette.ok; ink: white; clicked => { root.enter(); } }
+    }
+    Row {
+        Rectangle { }
+        PadKey { width: kw; height: kh; text: "0"; clicked => { root.key("0"); } }
+        Rectangle { }
+        Rectangle { }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Text and fields
+// ---------------------------------------------------------------------------
+
+export component Title inherits VerticalLayout {
+    in property <string> text;
+    in property <string> hint;
+    spacing: 6px;
+    vertical-stretch: 0;
+    Text {
+        text: root.text;
+        font-size: Type.title;
+        font-weight: 750;
+        color: Palette.ink;
+        wrap: word-wrap;
+    }
+    if root.hint != "": Text {
+        text: root.hint;
+        font-size: Type.subtitle;
+        color: Palette.body;
+        wrap: word-wrap;
+    }
+}
+
+/// A coloured strip for errors (red) and confirmations (green). Hidden when empty.
+export component Notice inherits Rectangle {
+    in property <string> text;
+    in property <bool> ok;
+    height: text == "" ? 0px : max(44px, label.preferred-height + 20px);
+    visible: text != "";
+    border-radius: 10px;
+    background: ok ? Palette.ok-soft : Palette.bad-soft;
+    border-width: 1px;
+    border-color: ok ? Palette.ok.with-alpha(0.35) : Palette.bad.with-alpha(0.35);
+    label := Text {
+        x: 16px;
+        width: parent.width - 32px;
+        text: root.text;
+        font-size: 16px;
+        font-weight: 550;
+        color: root.ok ? Palette.ok : Palette.bad;
+        wrap: word-wrap;
+        vertical-alignment: center;
+    }
+}
+
+/// A labelled one-line text field for staff forms.
+export component Field inherits VerticalLayout {
+    in property <string> label;
+    in property <string> placeholder;
+    in property <bool> password;
+    in-out property <string> text <=> input.text;
+    callback accepted;
+    spacing: 6px;
+    vertical-stretch: 0;
+
+    public function focus-input() { input.focus(); }
+    public function clear() { input.text = ""; }
+
+    Text {
+        text: root.label;
+        font-size: Type.small;
+        font-weight: 600;
+        color: Palette.body;
+    }
+    Rectangle {
+        height: 46px;
+        border-radius: 10px;
+        background: Palette.card;
+        border-width: input.has-focus ? 2px : 1px;
+        border-color: input.has-focus ? Palette.brand : Palette.line;
+        // Secret fields (PINs, passwords) can't be copied out: Ctrl/Cmd
+        // shortcuts (select all, copy, cut) do nothing here. The scope only
+        // listens; Tab and clicks still go straight to the field.
+        FocusScope {
+            focus-on-click: false;
+            focus-on-tab-navigation: false;
+            capture-key-pressed(event) => {
+                if (root.password && (event.modifiers.control || event.modifiers.meta)) {
+                    return accept;
+                }
+                return reject;
+            }
+            input := TextInput {
+                x: 14px;
+                width: parent.width - 28px;
+                height: parent.height;
+                font-size: 17px;
+                color: Palette.ink;
+                vertical-alignment: center;
+                single-line: true;
+                input-type: root.password ? InputType.password : InputType.text;
+                accepted => { root.accepted(); }
+            }
+        }
+        // ...and the mouse can't select in them (on Linux a mouse selection
+        // is copied too): a click only puts the cursor in the field.
+        if root.password: TouchArea {
+            mouse-cursor: MouseCursor.text;
+            clicked => { input.focus(); }
+        }
+        if input.text == "": Text {
+            x: 14px;
+            text: root.placeholder;
+            font-size: 17px;
+            color: Palette.faint;
+            vertical-alignment: center;
+        }
+    }
+}
+
+/// A plain table. `widths` are fractions of the table width (they should add
+/// up to 1). The newest rows come first; it scrolls when it is long.
+export component DataTable inherits Rectangle {
+    in property <[string]> headers;
+    in property <[float]> widths;
+    in property <[[string]]> rows;
+    in property <string> empty-text: "Nothing to show.";
+    /// Highlighted row, or -1. Rows are clickable only if `clickable` is set.
+    in property <int> selected: -1;
+    in property <bool> clickable;
+    callback row-clicked(int);
+
+    min-width: 200px;
+    preferred-width: 300px;
+    border-radius: 12px;
+    border-width: 1px;
+    border-color: Palette.line;
+    background: Palette.card;
+    clip: true;
+
+    VerticalLayout {
+        Rectangle {
+            height: 42px;
+            background: Palette.brand-soft;
+            HorizontalLayout {
+                padding-left: 16px;
+                padding-right: 16px;
+                for h[i] in root.headers: Text {
+                    min-width: 0px;
+                    preferred-width: 0px;
+                    horizontal-stretch: root.widths[i];
+                    text: h;
+                    font-size: 13px;
+                    font-weight: 700;
+                    color: Palette.brand-dark;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+            }
+        }
+        if root.rows.length == 0: Text {
+            height: 60px;
+            text: root.empty-text;
+            color: Palette.faint;
+            font-size: 15px;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+        ListView {
+            vertical-stretch: 1;
+            for row[r] in root.rows: Rectangle {
+                height: 40px;
+                background: r == root.selected ? Palette.brand-soft
+                    : (root.clickable && row-touch.has-hover) ? #f7f4fc
+                    : mod(r, 2) == 0 ? Palette.card : #faf9fc;
+                row-touch := TouchArea {
+                    enabled: root.clickable;
+                    mouse-cursor: root.clickable ? pointer : default;
+                    clicked => { root.row-clicked(r); }
+                }
+                HorizontalLayout {
+                    padding-left: 16px;
+                    padding-right: 16px;
+                    for cell[i] in row: Text {
+                        min-width: 0px;
+                        preferred-width: 0px;
+                        horizontal-stretch: root.widths[i];
+                        text: cell;
+                        font-size: 14px;
+                        color: Palette.ink;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Frame
+// ---------------------------------------------------------------------------
+
+/// Simple drawn logo mark: a gold coin with a purple "C".
+export component LogoMark inherits Rectangle {
+    width: 42px;
+    height: 42px;
+    border-radius: 21px;
+    background: @linear-gradient(135deg, #f8e07a 0%, Palette.gold 60%, #c9a419 100%);
+    Text {
+        text: "C";
+        font-size: 22px;
+        font-weight: 900;
+        color: Palette.brand-dark;
+    }
+}
+
+export component Header inherits Rectangle {
+    in property <string> right-text;
+    height: 76px;
+    background: @linear-gradient(90deg, Palette.brand-dark 0%, Palette.brand 100%);
+
+    HorizontalLayout {
+        padding-left: 32px;
+        padding-right: 32px;
+        spacing: 14px;
+        alignment: stretch;
+        VerticalLayout {
+            alignment: center;
+            LogoMark { }
+        }
+        VerticalLayout {
+            alignment: center;
+            spacing: 0px;
+            Text {
+                text: "Bank of CCNY";
+                font-size: 24px;
+                font-weight: 800;
+                color: white;
+            }
+            
+        }
+        Rectangle { horizontal-stretch: 1; }
+        VerticalLayout {
+            alignment: center;
+            Text {
+                text: root.right-text;
+                font-size: 15px;
+                color: #ffffffd8;
+                horizontal-alignment: right;
+            }
+        }
+    }
+    Rectangle {
+        y: parent.height - 4px;
+        height: 4px;
+        background: Palette.gold;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Small choices
+// ---------------------------------------------------------------------------
+
+/// One option of a row of pills (bill type, account type). `active` = chosen.
+/// `icon` (optional) shows a small picture before the text, e.g. a flag.
+export component Choice inherits Rectangle {
+    in property <string> text;
+    in property <bool> active;
+    in property <image> icon;
+    callback clicked;
+    min-width: 56px;
+    horizontal-stretch: 1;
+    height: 46px;
+    border-radius: 10px;
+    background: active ? Palette.brand : touch.has-hover ? Palette.brand-soft : Palette.card;
+    border-width: 1px;
+    border-color: active ? Palette.brand : Palette.line;
+    HorizontalLayout {
+        alignment: center;
+        spacing: 6px;
+        if root.icon.width > 0: VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: 22px;
+                height: 16.5px;
+                border-width: 1px;
+                border-color: Palette.line;
+                Image { source: root.icon; width: 22px; height: 16.5px; image-fit: fill; }
+            }
+        }
+        Text {
+            text: root.text;
+            font-size: 16px;
+            font-weight: 700;
+            color: root.active ? white : Palette.brand-dark;
+            vertical-alignment: center;
+        }
+    }
+    touch := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+}
+
+/// A tick box with a label. `checked` is two-way so forms can read it.
+export component Toggle inherits Rectangle {
+    in property <string> text;
+    in-out property <bool> checked;
+    callback toggled(bool);
+    min-height: 32px;
+    vertical-stretch: 0;
+    HorizontalLayout {
+        spacing: 12px;
+        alignment: start;
+        VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: 26px;
+                height: 26px;
+                border-radius: 6px;
+                border-width: 2px;
+                border-color: root.checked ? Palette.brand : Palette.line;
+                background: root.checked ? Palette.brand : Palette.card;
+                Text { text: root.checked ? "✓" : ""; color: white; font-size: 17px; font-weight: 800; }
+            }
+        }
+        Text { text: root.text; font-size: 16px; color: Palette.ink; vertical-alignment: center; }
+    }
+    // Covers the whole row: click the box or the words.
+    TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            root.checked = !root.checked;
+            root.toggled(root.checked);
+        }
+    }
+}

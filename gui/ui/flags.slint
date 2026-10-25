@@ -1,0 +1,25 @@
+// Small country flags for each currency code, so people can spot theirs.
+// Images: flag-icons 7.2.3 (MIT licence, see flags/LICENSE), compiled into
+// the program; nothing is loaded at run time.
+export global Flags {
+    /// The flag for a currency code ("EUR" -> the EU flag). Empty if unknown.
+    public pure function of(code: string) -> image {
+        if (code == "USD") { return @image-url("flags/usd.svg"); }
+        if (code == "EUR") { return @image-url("flags/eur.svg"); }
+        if (code == "GBP") { return @image-url("flags/gbp.svg"); }
+        if (code == "CNY") { return @image-url("flags/cny.svg"); }
+        if (code == "JPY") { return @image-url("flags/jpy.svg"); }
+        if (code == "CAD") { return @image-url("flags/cad.svg"); }
+        if (code == "MXN") { return @image-url("flags/mxn.svg"); }
+        if (code == "DOP") { return @image-url("flags/dop.svg"); }
+        if (code == "INR") { return @image-url("flags/inr.svg"); }
+        if (code == "KRW") { return @image-url("flags/krw.svg"); }
+        if (code == "BRL") { return @image-url("flags/brl.svg"); }
+        if (code == "JMD") { return @image-url("flags/jmd.svg"); }
+        if (code == "COP") { return @image-url("flags/cop.svg"); }
+        if (code == "BDT") { return @image-url("flags/bdt.svg"); }
+        if (code == "HTG") { return @image-url("flags/htg.svg"); }
+        if (code == "GYD") { return @image-url("flags/gyd.svg"); }
+        return @image-url("");
+    }
+}

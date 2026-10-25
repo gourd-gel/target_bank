@@ -1,0 +1,85 @@
+[package]
+name = "atm"
+version = "0.9.0"
+edition = "2024"
+rust-version = "1.88"
+description = "Bank of CCNY ATM: secure ATM simulation (Phase I)"
+authors = ["Zackery Wallach", "Christian Rasmussen", "Inhyuk Kim", "Chanakan Arponpong", "Abdul Mansoor"]
+
+
+# The core is a library so both front ends call the same checked code:
+#   src/main.rs = command-line ATM,  gui/ = desktop GUI (Slint).
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "atm"
+path = "src/main.rs"
+
+# One build folder and one Cargo.lock for the core, the CLI and the GUI.
+# `cargo build` here builds the core + CLI only; the GUI is `-p atm-gui`.
+[workspace]
+members = [".", "gui"]
+default-members = ["."]
+
+# Demo mode (sample logins + data). Off by default, so the graded build has no known passwords.
+#   cargo run --features demo -- --demo
+[features]
+demo = []
+# TEST BUILDS ONLY: adds `--demo --break-integrity`, which makes one demo
+# balance wrong on purpose so the sign-in check and out-of-service mode can be
+# seen working. Not in normal or plain demo builds. Implies demo.
+integrity-test = ["demo"]
+# The teller's one-button rate fetch. Without it, the program has no network code
+# and rates are typed in (the GUI turns it on).
+online-rates = ["dep:ureq"]
+
+[dependencies]
+aes-gcm = "0.10.3"          # encrypts card/account numbers, names, birth dates in the DB
+argon2 = "0.6.0"            # PIN / password hashing (Argon2id)
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
+chrono-tz = "0.10.4"        # bank day = New York calendar day
+getrandom = "0.4.3"         # OS randomness: salts, keys, nonces, account numbers
+hmac = "0.13"               # keyed audit-log chain, record MACs, number lookups
+rpassword = "7.5.4"         # hidden PIN / password entry (CLI)
+rusqlite = { version = "0.40.2", features = ["bundled"] }  # SQLite, compiled in
+serde_json = "1.0.154"      # reads the daily rate feed (strictly)
+# HTTPS client for the teller's "Check today's rates" (rustls: TLS 1.2/1.3, certificate checked).
+ureq = { version = "3", optional = true, default-features = false, features = ["rustls"] }
+sha2 = "0.11.0"
+zeroize = "1.8"             # wipe PINs / passwords / key bytes from memory after use
+
+# Overflow panics instead of wrapping, even in release builds (backstop for checked math).
+[profile.release]
+overflow-checks = true
+
+# Shorter first build: the GUI's own code and SQLite's C code need little
+# optimizing for an ATM screen. Argon2 and the crypto keep full speed.
+[profile.release.package.atm-gui]
+opt-level = 1
+[profile.release.package.libsqlite3-sys]
+opt-level = 1
+
+# Fastest first build, for a timed install (`--profile quick`): little is
+# optimized except the crypto that runs on every login or action (Argon2,
+# SHA-256 for the seal, AES for encrypted fields). Overflow checks stay on.
+[profile.quick]
+inherits = "release"
+opt-level = 0
+codegen-units = 256
+debug = false
+incremental = false
+[profile.quick.package.argon2]
+opt-level = 3
+[profile.quick.package.blake2]
+opt-level = 3
+[profile.quick.package.sha2]
+opt-level = 3
+[profile.quick.package.aes]
+opt-level = 3
+[profile.quick.package.ghash]
+opt-level = 3
+
+# Argon2 is slow on purpose; optimize dependencies so debug builds and tests stay fast.
+[profile.dev.package."*"]
+opt-level = 3

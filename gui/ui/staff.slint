@@ -1,0 +1,946 @@
+// Staff screens: sign-in, the Teller Admin console and the Cash Handler console.
+
+import { ScrollView } from "std-widgets.slint";
+import { Bank } from "bank.slint";
+import { Palette, Type, ActionButton, Title, Notice, Field, DataTable, Choice } from "theme.slint";
+import { Flags } from "flags.slint";
+
+export component StaffLoginScreen inherits Rectangle {
+    VerticalLayout {
+        alignment: center;
+        padding: 40px;
+        HorizontalLayout {
+            alignment: center;
+            Rectangle {
+                width: 480px;
+                border-radius: 20px;
+                background: Palette.card;
+                border-width: 1px;
+                border-color: Palette.line;
+                drop-shadow-blur: 16px;
+                drop-shadow-offset-y: 4px;
+                drop-shadow-color: #1e143018;
+
+                VerticalLayout {
+                    padding: 40px;
+                    spacing: 18px;
+                    Text {
+                        text: "STAFF ONLY";
+                        font-size: 13px;
+                        font-weight: 800;
+                        letter-spacing: 2px;
+                        color: Palette.gold.darker(0.2);
+                    }
+                    Title {
+                        text: Bank.staff-role == 1 ? "Teller Admin sign-in" : "Cash Handler sign-in";
+                        hint: "Use the staff ID and password set up for this machine.";
+                    }
+                    id-field := Field {
+                        label: "Staff ID";
+                        placeholder: "e.g. teller";
+                        text: Bank.staff-prefill;
+                        init => { if Bank.staff-prefill == "" { self.focus-input(); } }
+                        accepted => { pw-field.focus-input(); }
+                    }
+                    pw-field := Field {
+                        label: "Password";
+                        placeholder: "At least 12 characters";
+                        password: true;
+                        // A badge already gave the staff ID: the password is next.
+                        init => { if Bank.staff-prefill != "" { self.focus-input(); } }
+                        accepted => { root.submit(); }
+                    }
+                    Notice { text: Bank.message; ok: Bank.message-ok; }
+                    HorizontalLayout {
+                        spacing: 14px;
+                        ActionButton { text: "Cancel"; kind: 1; clicked => { Bank.cancel(); } }
+                        Rectangle { horizontal-stretch: 1; }
+                        ActionButton { text: "Sign in"; clicked => { root.submit(); } }
+                    }
+                }
+            }
+        }
+    }
+
+    function submit() {
+        Bank.staff-login(id-field.text, pw-field.text);
+        // The password is never kept in the form after a sign-in attempt.
+        pw-field.clear();
+    }
+}
+
+// ---------------------------------------------------------------------------
+
+component NavItem inherits Rectangle {
+    in property <string> text;
+    in property <bool> active;
+    callback clicked;
+    height: 46px;
+    border-radius: 10px;
+    background: active ? Palette.brand-soft : touch.has-hover ? #f7f4fc : transparent;
+    Rectangle {
+        x: 0;
+        width: 4px;
+        height: 22px;
+        border-radius: 2px;
+        background: root.active ? Palette.brand : transparent;
+    }
+    Text {
+        x: 18px;
+        text: root.text;
+        font-size: 16px;
+        font-weight: root.active ? 700 : 500;
+        color: root.active ? Palette.brand-dark : Palette.body;
+        vertical-alignment: center;
+    }
+    touch := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+}
+
+/// Left-hand menu for the staff consoles.
+component SideNav inherits Rectangle {
+    in property <string> role;
+    in property <[string]> items;
+    in property <int> current;
+    callback chosen(int);
+
+    width: 250px;
+    background: Palette.card;
+    Rectangle {
+        x: parent.width - 1px;
+        width: 1px;
+        background: Palette.line;
+    }
+    VerticalLayout {
+        padding: 22px;
+        spacing: 6px;
+        Text { text: root.role; font-size: 20px; font-weight: 800; color: Palette.ink; }
+        Text { text: "Signed in as " + Bank.staff-id; font-size: 14px; color: Palette.faint; }
+        Rectangle { height: 16px; }
+        // The menu scrolls on a short window; Sign out always stays in view.
+        nav := ScrollView {
+            vertical-stretch: 1;
+            content-width: self.visible-width;
+            content-height: list.preferred-height;
+            list := VerticalLayout {
+                width: nav.visible-width;
+                spacing: 6px;
+                for item[i] in root.items: NavItem {
+                    text: item;
+                    active: i == root.current;
+                    clicked => { root.chosen(i); }
+                }
+            }
+        }
+        Rectangle { height: 10px; }
+        ActionButton { text: "Sign out"; kind: 2; clicked => { Bank.staff-logout(); } }
+    }
+}
+
+/// Content area to the right of the menu.
+component Panel inherits VerticalLayout {
+    padding: 36px;
+    padding-top: 30px;
+    spacing: 18px;
+}
+
+// ---------------------------------------------------------------------------
+// First-run setup (no default passwords: the first staff logins are made here)
+// ---------------------------------------------------------------------------
+
+export component SetupScreen inherits Rectangle {
+    VerticalLayout {
+        alignment: center;
+        padding: 40px;
+        HorizontalLayout {
+            alignment: center;
+            Rectangle {
+                width: 760px;
+                border-radius: 20px;
+                background: Palette.card;
+                border-width: 1px;
+                border-color: Palette.line;
+                VerticalLayout {
+                    padding: 36px;
+                    spacing: 16px;
+                    Text { text: "FIRST-TIME SETUP"; font-size: 13px; font-weight: 800; letter-spacing: 2px; color: Palette.gold.darker(0.2); }
+                    Title {
+                        text: "Create the staff logins";
+                        hint: "This machine has no default passwords. Usernames: 3-32 of a-z, 0-9, _. Passwords: 12+ characters.";
+                    }
+                    HorizontalLayout {
+                        spacing: 14px;
+                        t-id := Field { label: "Teller Admin username"; placeholder: "e.g. teller"; }
+                        t-pw := Field { label: "Password"; password: true; }
+                        t-pw2 := Field { label: "Password again"; password: true; }
+                    }
+                    HorizontalLayout {
+                        spacing: 14px;
+                        h-id := Field { label: "Cash Handler username"; placeholder: "e.g. cashier"; }
+                        h-pw := Field { label: "Password"; password: true; }
+                        h-pw2 := Field { label: "Password again"; password: true; }
+                    }
+                    Notice { text: Bank.message; ok: Bank.message-ok; }
+                    HorizontalLayout {
+                        alignment: end;
+                        ActionButton {
+                            text: "Create logins";
+                            clicked => {
+                                if (Bank.setup(t-id.text, t-pw.text, t-pw2.text, h-id.text, h-pw.text, h-pw2.text)) {
+                                    t-id.clear();
+                                    h-id.clear();
+                                }
+                                // Passwords never stay in the form.
+                                t-pw.clear(); t-pw2.clear(); h-pw.clear(); h-pw2.clear();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// "Change my password" panel, shared by both staff consoles.
+component PasswordPanel inherits Panel {
+    Title { text: "Change my password"; hint: "You need your current password. 12 to 128 characters."; }
+    HorizontalLayout {
+        spacing: 14px;
+        cur := Field { label: "Current password"; password: true; }
+        new1 := Field { label: "New password"; password: true; }
+        new2 := Field { label: "New password again"; password: true; }
+    }
+    Notice { text: Bank.message; ok: Bank.message-ok; }
+    HorizontalLayout {
+        alignment: start;
+        ActionButton {
+            text: "Change password";
+            clicked => {
+                if (Bank.change-password(cur.text, new1.text, new2.text)) { }
+                cur.clear(); new1.clear(); new2.clear();
+            }
+        }
+    }
+    Rectangle { vertical-stretch: 1; }
+}
+
+// ---------------------------------------------------------------------------
+// Teller Admin
+// ---------------------------------------------------------------------------
+
+/// PIN typed twice by the customer, plus the submit button. Shared by the
+/// three "new card holder" forms. PINs are wiped after every attempt.
+component PinsAndSubmit inherits VerticalLayout {
+    in property <string> button-text;
+    /// Called with (pin, pin again); the form decides what else to send.
+    callback submit(string, string);
+    spacing: 16px;
+    HorizontalLayout {
+        spacing: 18px;
+        pin1 := Field { width: 300px; label: "PIN (4 to 12 digits), typed by the customer"; password: true; }
+        pin2 := Field { width: 300px; label: "Customer repeats the PIN"; password: true; }
+        Rectangle { horizontal-stretch: 1; }
+    }
+    HorizontalLayout {
+        alignment: start;
+        ActionButton {
+            text: root.button-text;
+            clicked => {
+                root.submit(pin1.text, pin2.text);
+                pin1.clear();
+                pin2.clear();
+            }
+        }
+    }
+}
+
+/// Demo builds only: pick a sample customer to fill in their card or account
+/// number, as if they handed it over at the counter.
+component DemoPick inherits VerticalLayout {
+    in property <bool> account;
+    callback picked(string);
+    property <int> chosen: -1;
+    alignment: end;
+    spacing: 6px;
+    Text { text: "Customer"; font-size: Type.small; font-weight: 600; color: Palette.body; }
+    box := Rectangle {
+        width: 200px;
+        height: 46px;
+        border-radius: 10px;
+        background: Palette.card;
+        border-width: 1px;
+        border-color: Palette.line;
+        Text {
+            x: 14px;
+            text: (root.chosen < 0 ? "Choose" : Bank.demo-names[root.chosen]) + "  \u{25BE}";
+            font-size: 16px;
+            color: root.chosen < 0 ? Palette.faint : Palette.ink;
+        }
+        TouchArea { clicked => { menu.show(); } }
+        menu := PopupWindow {
+            y: box.height + 4px;
+            width: box.width;
+            Rectangle {
+                background: Palette.card;
+                border-radius: 10px;
+                border-width: 1px;
+                border-color: Palette.line;
+                drop-shadow-blur: 8px;
+                drop-shadow-color: #00000030;
+                VerticalLayout {
+                    padding: 6px;
+                    for name[i] in Bank.demo-names: Rectangle {
+                        height: 34px;
+                        border-radius: 6px;
+                        background: pick.has-hover ? Palette.brand-soft : transparent;
+                        Text { x: 10px; text: name; font-size: 15px; color: Palette.ink; }
+                        pick := TouchArea {
+                            clicked => {
+                                root.chosen = i;
+                                root.picked(Bank.demo-number(root.account, i));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// An existing holder at the counter types their card number and PIN to
+/// agree to the change (checked by the core; a wrong PIN counts toward the lock).
+component HolderConfirm inherits HorizontalLayout {
+    in property <string> who;
+    out property <string> card <=> card-field.text;
+    out property <string> pin <=> pin-field.text;
+    public function clear-pin() { pin-field.clear(); }
+    public function clear() { card-field.clear(); pin-field.clear(); }
+    spacing: 18px;
+    // Fields shrink (to 200px) on a narrow window so the demo picker still fits.
+    card-field := Field { min-width: 200px; max-width: 300px; horizontal-stretch: 1; label: root.who + "'s card number"; placeholder: "10 digits"; }
+    pin-field := Field { min-width: 200px; max-width: 300px; horizontal-stretch: 1; label: root.who + "'s PIN, typed by them"; password: true; }
+    if Bank.demo-names.length > 0: DemoPick { picked(n) => { card-field.text = n; } }
+    Rectangle { horizontal-stretch: 1; }
+}
+
+/// Individual account (adults, US dollars). With `guest` set, it registers
+/// another bank's card instead (simulated card network), in its own currency.
+component IndividualForm inherits VerticalLayout {
+    in property <bool> guest;
+    in-out property <string> currency: "USD";
+    spacing: 14px;
+    HorizontalLayout {
+        spacing: 18px;
+        name := Field { label: "Full name"; placeholder: "e.g. Ada Lovelace"; }
+        dob := Field { label: "Date of birth"; placeholder: "YYYY-MM-DD"; }
+        balance := Field {
+            label: (root.guest ? "Balance at their bank (" : "Starting balance (") + root.currency + ")";
+            placeholder: root.currency == "JPY" ? "whole yen, e.g. 25000" : root.currency == "KRW" ? "whole won, e.g. 500000" : "e.g. 250.00";
+        }
+    }
+    if root.guest: VerticalLayout {
+        spacing: 6px;
+        Text { text: "Card's currency"; font-size: 14px; font-weight: 600; color: Palette.body; }
+        // Most used first, two rows of 8.
+        for row in [["USD", "EUR", "GBP", "CNY", "JPY", "CAD", "MXN", "DOP"],
+                    ["INR", "KRW", "BRL", "JMD", "COP", "BDT", "HTG", "GYD"]]: HorizontalLayout {
+            spacing: 6px;
+            alignment: start;
+            for code in row: Choice {
+                width: 86px;
+                height: 40px;
+                text: code;
+                icon: Flags.of(code);
+                active: root.currency == code;
+                clicked => { root.currency = code; }
+            }
+        }
+    }
+    PinsAndSubmit {
+        button-text: root.guest ? "Register card" : "Open account";
+        submit(p1, p2) => {
+            if (Bank.open-account(root.guest ? 4 : 0, name.text, dob.text, p1, p2, balance.text, "", "", root.currency, "", "")) {
+                name.clear(); dob.clear(); balance.clear();
+            }
+        }
+    }
+}
+
+/// Second adult on an existing account (joint). The current holder agrees
+/// with their own card and PIN.
+component JointForm inherits VerticalLayout {
+    spacing: 16px;
+    HorizontalLayout {
+        spacing: 18px;
+        account := Field { width: 300px; label: "Existing account number"; placeholder: "10 digits"; }
+        if Bank.demo-names.length > 0: DemoPick { account: true; picked(n) => { account.text = n; } }
+        Rectangle { horizontal-stretch: 1; }
+    }
+    holder := HolderConfirm { who: "Current holder"; }
+    HorizontalLayout {
+        spacing: 18px;
+        name := Field { width: 300px; label: "New holder's full name"; placeholder: "e.g. Ada Lovelace"; }
+        dob := Field { width: 300px; label: "Date of birth"; placeholder: "YYYY-MM-DD"; }
+        Rectangle { horizontal-stretch: 1; }
+    }
+    PinsAndSubmit {
+        button-text: "Add joint holder";
+        submit(p1, p2) => {
+            if (Bank.open-account(1, name.text, dob.text, p1, p2, "", account.text, "", "", holder.card, holder.pin)) {
+                account.clear(); name.clear(); dob.clear(); holder.clear();
+            }
+            holder.clear-pin();
+        }
+    }
+}
+
+/// Youth account (under 18), linked to a parent's card. The parent agrees
+/// with their own card and PIN.
+component YouthForm inherits VerticalLayout {
+    spacing: 16px;
+    guardian := HolderConfirm { who: "Parent"; }
+    HorizontalLayout {
+        spacing: 18px;
+        name := Field { width: 300px; label: "Child's full name"; placeholder: "e.g. Ada Lovelace"; }
+        dob := Field { width: 300px; label: "Child's date of birth"; placeholder: "YYYY-MM-DD"; }
+        Rectangle { horizontal-stretch: 1; }
+    }
+    HorizontalLayout {
+        spacing: 18px;
+        balance := Field { width: 300px; label: "Starting balance"; placeholder: "e.g. 50.00"; }
+        Rectangle { horizontal-stretch: 1; }
+    }
+    PinsAndSubmit {
+        button-text: "Open youth account";
+        submit(p1, p2) => {
+            if (Bank.open-account(2, name.text, dob.text, p1, p2, balance.text, "", "", "", guardian.card, guardian.pin)) {
+                guardian.clear(); name.clear(); dob.clear(); balance.clear();
+            }
+            guardian.clear-pin();
+        }
+    }
+}
+
+/// Link another parent/guardian card to a youth account. A current guardian
+/// agrees with their own card and PIN.
+component GuardianForm inherits VerticalLayout {
+    spacing: 16px;
+    vertical-stretch: 0;
+    HorizontalLayout {
+        spacing: 18px;
+        youth := Field { width: 300px; label: "Youth account number"; placeholder: "10 digits"; }
+        if Bank.demo-names.length > 0: DemoPick { account: true; picked(n) => { youth.text = n; } }
+        Rectangle { horizontal-stretch: 1; }
+    }
+    HorizontalLayout {
+        spacing: 18px;
+        card := Field { width: 300px; label: "New guardian's card number"; placeholder: "10 digits"; }
+        if Bank.demo-names.length > 0: DemoPick { picked(n) => { card.text = n; } }
+        Rectangle { horizontal-stretch: 1; }
+    }
+    current := HolderConfirm { who: "Current guardian"; }
+    HorizontalLayout {
+        alignment: start;
+        ActionButton {
+            text: "Add guardian";
+            clicked => {
+                if (Bank.open-account(3, "", "", "", "", "", youth.text, card.text, "", current.card, current.pin)) {
+                    youth.clear(); card.clear(); current.clear();
+                }
+                current.clear-pin();
+            }
+        }
+    }
+}
+
+/// Red bar across the teller screen while the ATM is out of service.
+/// Red banner above the teller's pages while the ATM is out of service.
+/// Kept short so the page under it still fits; details are on Data integrity.
+component ServiceBanner inherits Rectangle {
+    background: Palette.bad;
+    HorizontalLayout {
+        padding: 12px;
+        padding-left: 24px;
+        padding-right: 20px;
+        spacing: 18px;
+        VerticalLayout {
+            alignment: center;
+            spacing: 2px;
+            horizontal-stretch: 1;
+            Text {
+                text: Bank.signin-problem != "" ? "INTEGRITY CHECK FAILED AT SIGN-IN: ATM OUT OF SERVICE" : "ATM OUT OF SERVICE";
+                font-size: 17px;
+                font-weight: 800;
+                color: white;
+                overflow: elide;
+            }
+            Text {
+                text: (Bank.signin-problem != "" ? Bank.signin-problem : Bank.service-reason) + "  (since " + Bank.service-since + ")";
+                font-size: 13px;
+                color: white;
+                overflow: elide;
+            }
+            Text {
+                text: "No cards taken; Teller Admin sign-in only. Review Audit log and Data integrity, then resume.";
+                font-size: 13px;
+                color: white;
+                overflow: elide;
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            ActionButton { min-width: 180px; max-width: 180px; font-size: 16px; text: "Resume service"; kind: 1; clicked => { Bank.resume-service(); } }
+        }
+    }
+}
+
+export component TellerScreen inherits Rectangle {
+    HorizontalLayout {
+        SideNav {
+            role: "Teller Admin";
+            items: ["Customer accounts", "Open an account", "Locked cards", "Daily limits", "Audit log", "Data integrity", "My password", "Exchange rates", "Holds and approvals"];
+            current: Bank.teller-tab;
+            chosen(i) => { Bank.teller-open-tab(i); }
+        }
+    // The banner sits over the page only, so the menu and Sign out keep their room.
+    VerticalLayout {
+        horizontal-stretch: 1;
+        if Bank.service-halted: ServiceBanner { }
+    // A page taller than the window scrolls instead of being cut off.
+    page := ScrollView {
+        vertical-stretch: 1;
+        content-width: self.visible-width;
+        content-height: max(self.visible-height, panels.min-height);
+    panels := VerticalLayout {
+        width: page.visible-width;
+        height: page.content-height;
+
+        // 0: accounts, their activity, freeze / close
+        if Bank.teller-tab == 0: Panel {
+            Title { text: "Customer accounts"; hint: "Click an account (or type its number) to see everything that happened on it."; }
+            HorizontalLayout {
+                spacing: 12px;
+                alignment: start;
+                acct := Field {
+                    width: 220px;
+                    label: "Account number";
+                    placeholder: "10 digits";
+                    text <=> Bank.selected-account;
+                    accepted => { Bank.view-activity(self.text); }
+                }
+                VerticalLayout { alignment: end; ActionButton { min-width: 136px; max-width: 136px; font-size: 16px; text: "View activity"; kind: 1; clicked => { Bank.view-activity(acct.text); } } }
+                VerticalLayout { alignment: end; ActionButton { min-width: 120px; max-width: 120px; font-size: 16px; text: "Freeze"; kind: 1; clicked => { Bank.account-action("freeze", acct.text); } } }
+                VerticalLayout { alignment: end; ActionButton { min-width: 120px; max-width: 120px; font-size: 16px; text: "Unfreeze"; kind: 1; clicked => { Bank.account-action("unfreeze", acct.text); } } }
+                VerticalLayout { alignment: end; ActionButton { min-width: 120px; max-width: 120px; font-size: 16px; text: "Close"; kind: 2; clicked => { Bank.account-action("close", acct.text); } } }
+            }
+            Notice { text: Bank.message; ok: Bank.message-ok; }
+            // List of accounts, or one account's activity (full width, so it stays readable).
+            if !Bank.activity-shown: DataTable {
+                vertical-stretch: 1;
+                headers: ["Account", "Type", "Status", "Holders"];
+                widths: [0.15, 0.17, 0.09, 0.59];
+                rows: Bank.account-rows;
+                clickable: true;
+                empty-text: "No customer accounts yet.";
+                row-clicked(r) => { Bank.view-activity(Bank.account-rows[r][0]); }
+            }
+            if Bank.activity-shown: VerticalLayout {
+                vertical-stretch: 1;
+                spacing: 10px;
+                Text { text: Bank.activity-title; font-size: 16px; font-weight: 700; color: Palette.body; }
+                DataTable {
+                    vertical-stretch: 1;
+                    headers: ["When", "Who", "Event", "Amount", "Details"];
+                    widths: [0.17, 0.18, 0.16, 0.11, 0.38];
+                    rows: Bank.activity-rows;
+                    empty-text: "Nothing has happened on this account yet.";
+                }
+                HorizontalLayout {
+                    spacing: 10px;
+                    ActionButton { text: "All accounts"; kind: 1; clicked => { Bank.activity-shown = false; } }
+                    Rectangle { horizontal-stretch: 1; }
+                    ActionButton { text: "Newer"; kind: 1; enabled: Bank.activity-page > 0; clicked => { Bank.activity-turn(-1); } }
+                    ActionButton { text: "Older"; kind: 1; enabled: Bank.activity-more; clicked => { Bank.activity-turn(1); } }
+                }
+            }
+        }
+
+        // 1: open an account / add a joint holder / youth account / guardian
+        if Bank.teller-tab == 1: Panel {
+            Title {
+                text: "Open an account";
+                hint: Bank.open-kind == 0 ? "Adults (18+). Hand the keyboard to the customer for the PIN."
+                    : Bank.open-kind == 1 ? "Adds a second adult to an existing account. They get their own card and PIN."
+                    : Bank.open-kind == 2 ? "For a child under 18, managed by a parent's card. Starts at $100/day withdrawals, $50/day transfers, family-only transfers."
+                    : Bank.open-kind == 4 ? "Stands in for the card network: another bank's card. It can only withdraw (paying the ATM fee) and check its balance here."
+                    : "Adds another parent or guardian to an existing youth account.";
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                Choice { text: "Individual"; active: Bank.open-kind == 0; clicked => { Bank.open-kind = 0; Bank.message = ""; } }
+                Choice { text: "Joint holder"; active: Bank.open-kind == 1; clicked => { Bank.open-kind = 1; Bank.message = ""; } }
+                Choice { text: "Youth account"; active: Bank.open-kind == 2; clicked => { Bank.open-kind = 2; Bank.message = ""; } }
+                Choice { text: "Add guardian"; active: Bank.open-kind == 3; clicked => { Bank.open-kind = 3; Bank.message = ""; } }
+                Choice { text: "Other bank's card"; active: Bank.open-kind == 4; clicked => { Bank.open-kind = 4; Bank.message = ""; } }
+            }
+            if Bank.open-kind == 0: IndividualForm { }
+            if Bank.open-kind == 4: IndividualForm { guest: true; }
+            if Bank.open-kind == 1: JointForm { }
+            if Bank.open-kind == 2: YouthForm { }
+            if Bank.open-kind == 3: GuardianForm { }
+            Notice { text: Bank.message; ok: Bank.message-ok; }
+            Rectangle { vertical-stretch: 1; }
+        }
+
+        // 2: locked cards
+        if Bank.teller-tab == 2: Panel {
+            Title { text: "Locked cards"; hint: "Locked after 3 wrong PINs. Check the customer's photo ID against the name and date of birth, then type the number from the card they hand you. One unlock per card per day."; }
+            DataTable {
+                vertical-stretch: 1;
+                headers: ["Card", "Account", "Name", "Date of birth"];
+                widths: [0.24, 0.24, 0.32, 0.20];
+                rows: Bank.locked-rows;
+                empty-text: "No locked cards.";
+            }
+            HorizontalLayout {
+                spacing: 12px;
+                alignment: start;
+                card := Field { width: 320px; label: "Card number, from the customer's card"; placeholder: "10 digits"; }
+                if Bank.demo-names.length > 0: DemoPick { picked(n) => { card.text = n; } }
+                VerticalLayout { alignment: end; ActionButton { text: "Unlock card"; clicked => { Bank.unlock(card.text); } } }
+            }
+            Notice { text: Bank.message; ok: Bank.message-ok; }
+        }
+
+        // 8: activity holds, and larger amounts approved at the counter
+        if Bank.teller-tab == 8: Panel {
+            Title {
+                text: "Holds and approvals";
+                hint: "Check photo ID first. Release a hold once the customer confirms the activity was theirs.";
+            }
+            DataTable {
+                vertical-stretch: 1;
+                headers: ["Account", "Holders", "Why it was held", "Since"];
+                widths: [0.15, 0.17, 0.52, 0.16];
+                rows: Bank.hold-rows;
+                clickable: true;
+                empty-text: "No accounts on hold.";
+                row-clicked(r) => { self.selected = r; account.text = Bank.hold-rows[r][0]; }
+            }
+            HorizontalLayout {
+                spacing: 12px;
+                alignment: start;
+                account := Field { width: 220px; label: "Account number"; placeholder: "10 digits"; }
+                VerticalLayout { alignment: end; ActionButton { text: "Release hold"; clicked => { Bank.release-hold(account.text); } } }
+            }
+            Title {
+                text: "Approve a larger amount for today";
+                hint: "Today only. Up to $4,000 extra withdrawal, $40,000 extra deposit or $20,000 extra transfer.";
+            }
+            HorizontalLayout {
+                spacing: 10px;
+                alignment: start;
+                VerticalLayout { alignment: end; ActionButton { narrowest: 120px; text: "Withdrawal"; kind: Bank.raise-kind == 0 ? 0 : 1; clicked => { Bank.raise-kind = 0; } } }
+                VerticalLayout { alignment: end; ActionButton { narrowest: 120px; text: "Deposit"; kind: Bank.raise-kind == 1 ? 0 : 1; clicked => { Bank.raise-kind = 1; } } }
+                VerticalLayout { alignment: end; ActionButton { narrowest: 120px; text: "Transfer"; kind: Bank.raise-kind == 2 ? 0 : 1; clicked => { Bank.raise-kind = 2; } } }
+                extra := Field { width: 130px; label: "Extra $"; placeholder: "e.g. 500"; }
+                VerticalLayout { alignment: end; ActionButton { text: "Approve for today"; clicked => { Bank.raise-limit(account.text, Bank.raise-kind, extra.text); } } }
+            }
+            Notice { text: Bank.message; ok: Bank.message-ok; }
+        }
+
+        // 3: limits
+        if Bank.teller-tab == 3: Panel {
+            Title { text: "Daily limits"; hint: "Apply to every account, per day (New York time). Youth caps set by parents can only lower them."; }
+            HorizontalLayout {
+                spacing: 18px;
+                Field { label: "Withdrawal limit"; text <=> Bank.limit-withdrawal; }
+                Field { label: "Deposit limit"; text <=> Bank.limit-deposit; }
+                Field { label: "Transfer limit"; text <=> Bank.limit-transfer; }
+            }
+            Notice { text: Bank.message; ok: Bank.message-ok; }
+            HorizontalLayout {
+                alignment: start;
+                ActionButton {
+                    text: "Save limits";
+                    clicked => { Bank.save-limits(Bank.limit-withdrawal, Bank.limit-deposit, Bank.limit-transfer); }
+                }
+            }
+            Rectangle { vertical-stretch: 1; }
+        }
+
+        // 4: audit log (every event)
+        if Bank.teller-tab == 4: Panel {
+            Title { text: "Security audit log"; hint: "Every login, lockout, transaction and staff action, newest first. Page " + (Bank.audit-page + 1) + "."; }
+            DataTable {
+                vertical-stretch: 1;
+                headers: ["#", "When", "Who", "Event", "Account", "Amount", "Details"];
+                widths: [0.06, 0.17, 0.17, 0.15, 0.13, 0.11, 0.21];
+                rows: Bank.audit-rows;
+            }
+            HorizontalLayout {
+                spacing: 10px;
+                ActionButton { text: "Newer"; kind: 1; enabled: Bank.audit-page > 0; clicked => { Bank.audit-turn(-1); } }
+                ActionButton { text: "Older"; kind: 1; enabled: Bank.audit-more; clicked => { Bank.audit-turn(1); } }
+                Rectangle { horizontal-stretch: 1; }
+                ActionButton { text: "Refresh"; kind: 1; clicked => { Bank.teller-open-tab(4); } }
+            }
+        }
+
+        // 5: integrity
+        if Bank.teller-tab == 5: Panel {
+            Title {
+                text: "Data integrity check";
+                hint: "Re-checks the signed (HMAC) audit log, recomputes every balance and the cash from it, checks the signed limits, fees, exchange rates and rate history, and matches limits, rates and freezes against the log. It also runs at every Teller Admin sign-in; if it fails, the ATM goes out of service. Halt ATM turns customers away by hand.";
+            }
+            HorizontalLayout {
+                alignment: start;
+                spacing: 12px;
+                ActionButton { text: "Run check"; clicked => { Bank.verify(); } }
+                if !Bank.service-halted: ActionButton { text: "Halt ATM"; kind: 2; clicked => { Bank.halt-service(); } }
+                if Bank.service-halted: ActionButton { text: "Resume service"; kind: 1; clicked => { Bank.resume-service(); } }
+            }
+            if Bank.integrity-ran: Rectangle {
+                border-radius: 14px;
+                background: Bank.integrity-ok ? Palette.ok-soft : Palette.bad-soft;
+                border-width: 1px;
+                border-color: Bank.integrity-ok ? Palette.ok.with-alpha(0.35) : Palette.bad.with-alpha(0.35);
+                VerticalLayout {
+                    padding: 22px;
+                    spacing: 8px;
+                    Text {
+                        text: Bank.integrity-ok ? "No tampering detected" : "Problems found: stop using this machine and escalate";
+                        font-size: 20px;
+                        font-weight: 750;
+                        color: Bank.integrity-ok ? Palette.ok : Palette.bad;
+                    }
+                    for line in Bank.integrity-lines: Text { text: line; font-size: 16px; color: Palette.ink; wrap: word-wrap; }
+                }
+            }
+            Rectangle { vertical-stretch: 1; }
+        }
+
+        // 6: own password
+        if Bank.teller-tab == 6: PasswordPanel { }
+
+        // 7: exchange rates and fees (foreign-currency accounts, other banks' cards)
+        if Bank.teller-tab == 7: Panel {
+            Title {
+                text: Bank.rate-feed-shown ? "Today's rates: check, then approve"
+                    : Bank.rate-history-shown ? "Rate history" : "Exchange rates and fees";
+                hint: Bank.rate-feed-shown ? Bank.rate-feed-hint
+                    : Bank.rate-history-shown ? "Every rate ever set, newest first. Kept permanently; nobody can edit or delete it."
+                    : "Type a rate, or check today's rates online. A typed rate can move at most 5% in a day.";
+            }
+            if Bank.rate-feed-shown: DataTable {
+                vertical-stretch: 1;
+                headers: ["Currency", "Now", "Today's feed", "Will set", "Note"];
+                widths: [0.24, 0.12, 0.13, 0.12, 0.39];
+                rows: Bank.rate-feed-rows;
+            }
+            if Bank.rate-feed-shown: HorizontalLayout {
+                spacing: 12px;
+                Text { text: Bank.rate-feed-credit; font-size: 13px; color: Palette.faint; vertical-alignment: center; horizontal-stretch: 1; }
+                ActionButton { text: "Cancel"; kind: 1; clicked => { Bank.rate-cancel-feed(); } }
+                ActionButton { text: "Approve these rates"; clicked => { Bank.rate-approve-feed(); } }
+            }
+            if !Bank.rate-feed-shown && !Bank.rate-history-shown: DataTable {
+                vertical-stretch: 1;
+                headers: ["Currency", "Per US dollar", "Set", "By", "Status"];
+                widths: [0.28, 0.16, 0.22, 0.16, 0.18];
+                rows: Bank.rate-rows;
+                clickable: true;
+                selected: Bank.rate-selected;
+                row-clicked(r) => { Bank.rate-selected = r; Bank.rate-currency = Bank.rate-codes[r]; }
+            }
+            if !Bank.rate-feed-shown && Bank.rate-history-shown: DataTable {
+                vertical-stretch: 1;
+                headers: ["Currency", "Per US dollar", "Set", "By", "Change"];
+                widths: [0.28, 0.16, 0.22, 0.16, 0.18];
+                rows: Bank.rate-history-rows;
+                empty-text: "No rates set yet.";
+            }
+            // Today's rate for the picked currency, and its emergency stop.
+            if !Bank.rate-feed-shown && !Bank.rate-history-shown: HorizontalLayout {
+                spacing: 12px;
+                alignment: start;
+                VerticalLayout {
+                    alignment: end;
+                    padding-bottom: 6px;
+                    Rectangle {
+                        width: 44px;
+                        height: 33px;
+                        border-width: 1px;
+                        border-color: Palette.line;
+                        Image { source: Flags.of(Bank.rate-currency); width: 44px; height: 33px; image-fit: fill; }
+                    }
+                }
+                rate := Field { width: 190px; label: Bank.rate-currency + " per 1 US dollar"; placeholder: Bank.rate-current[Bank.rate-selected] == "" ? "units per dollar" : "now " + Bank.rate-current[Bank.rate-selected]; }
+                VerticalLayout {
+                    alignment: end;
+                    ActionButton { text: "Save rate"; clicked => { if (Bank.save-rate(Bank.rate-currency, rate.text)) { rate.clear(); } } }
+                }
+                Rectangle { width: 12px; }
+                VerticalLayout {
+                    alignment: end;
+                    ActionButton { text: "Pause " + Bank.rate-currency; kind: 1; clicked => { Bank.rate-pause(Bank.rate-currency, true); } }
+                }
+                VerticalLayout {
+                    alignment: end;
+                    ActionButton { text: "Resume " + Bank.rate-currency; kind: 1; clicked => { Bank.rate-pause(Bank.rate-currency, false); } }
+                }
+            }
+            // Fees: each is the higher of the percent and the minimum.
+            if !Bank.rate-feed-shown && !Bank.rate-history-shown: HorizontalLayout {
+                spacing: 10px;
+                Field { width: 118px; label: "Exchange fee %"; text <=> Bank.rate-fee; }
+                Field { width: 92px; label: "at least $"; text <=> Bank.rate-fee-min; }
+                VerticalLayout {
+                    alignment: end;
+                    ActionButton { narrowest: 72px; text: "Save"; kind: 1; clicked => { Bank.save-fee(Bank.rate-fee, Bank.rate-fee-min); } }
+                }
+                Rectangle { width: 14px; }
+                Field { width: 150px; label: "Other bank's card %"; text <=> Bank.rate-atm-fee; }
+                Field { width: 92px; label: "at least $"; text <=> Bank.rate-atm-fee-min; }
+                VerticalLayout {
+                    alignment: end;
+                    ActionButton { narrowest: 72px; text: "Save"; kind: 1; clicked => { Bank.save-atm-fee(Bank.rate-atm-fee, Bank.rate-atm-fee-min); } }
+                }
+                Rectangle { horizontal-stretch: 1; }
+            }
+            // Check today's rates, pause everything, and the history view.
+            if !Bank.rate-feed-shown: HorizontalLayout {
+                spacing: 12px;
+                if !Bank.rate-history-shown: ActionButton { text: "Check today's rates"; clicked => { Bank.rate-check-feed(); } }
+                Rectangle { horizontal-stretch: 1; }
+                if !Bank.rate-history-shown: ActionButton { narrowest: 120px; text: "Pause all"; kind: 2; clicked => { Bank.rate-pause("ALL", true); } }
+                ActionButton {
+                    text: Bank.rate-history-shown ? "Back to rates" : "Rate history";
+                    kind: 1;
+                    clicked => { Bank.rate-show-history(!Bank.rate-history-shown); }
+                }
+            }
+            Notice { text: Bank.message; ok: Bank.message-ok; }
+        }
+    }
+    }
+    }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Cash Handler
+// ---------------------------------------------------------------------------
+
+component Stat inherits Rectangle {
+    in property <string> label;
+    in property <string> value;
+    in property <string> caption;
+    in property <bool> alert;
+    height: 92px;
+    border-radius: 14px;
+    background: alert ? Palette.warn-soft : Palette.card;
+    border-width: 1px;
+    border-color: alert ? Palette.warn.with-alpha(0.4) : Palette.line;
+    VerticalLayout {
+        padding: 16px;
+        spacing: 2px;
+        Text { text: root.label; font-size: 14px; color: Palette.body; overflow: elide; }
+        Text { text: root.value; font-size: 26px; font-weight: 800; color: root.alert ? Palette.warn : Palette.brand-dark; }
+        if root.caption != "": Text { text: root.caption; font-size: 12px; font-weight: 600; color: Palette.warn; overflow: elide; }
+    }
+}
+
+export component CashScreen inherits Rectangle {
+    property <int> bill: 2;
+
+    HorizontalLayout {
+        SideNav {
+            role: "Cash Handler";
+            items: ["Cash inventory", "My password"];
+            current: Bank.cash-tab;
+            chosen(i) => { Bank.cash-open-tab(i); }
+        }
+        if Bank.cash-tab == 0: Panel {
+            Title { text: "Cash inventory"; hint: "Restock fills up to the cash maximum. Deposits can push it over; remove only the surplus."; }
+            HorizontalLayout {
+                spacing: 14px;
+                Stat {
+                    label: "Cash in machine";
+                    value: Bank.cash-total;
+                    alert: Bank.cash-low || Bank.cash-over;
+                    caption: Bank.cash-low ? "Below one customer's daily limit: restock"
+                        : Bank.cash-over ? "Over the cash maximum: remove the surplus" : "";
+                }
+                Stat { label: "Cash maximum"; value: Bank.cash-maximum; }
+                Stat { label: "Customer daily withdrawal limit"; value: Bank.cash-limit; }
+            }
+            HorizontalLayout {
+                spacing: 18px;
+                vertical-stretch: 1;
+                VerticalLayout {
+                    horizontal-stretch: 1.3;
+                    spacing: 10px;
+                    DataTable {
+                        height: 42px + 5 * 40px + 2px;
+                        headers: ["Bill", "Count", "Value"];
+                        widths: [0.34, 0.30, 0.36];
+                        rows: Bank.cash-rows;
+                    }
+                    for w in Bank.cash-warnings: Text { text: w; font-size: 14px; font-weight: 600; color: Palette.warn; wrap: word-wrap; }
+                    Rectangle { vertical-stretch: 1; }
+                }
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    spacing: 14px;
+                    Rectangle {
+                        vertical-stretch: 0;
+                        border-radius: 14px;
+                        background: Palette.card;
+                        border-width: 1px;
+                        border-color: Palette.line;
+                        VerticalLayout {
+                            padding: 20px;
+                            spacing: 12px;
+                            alignment: start;
+                            Text { text: "Restock or remove bills"; font-size: 18px; font-weight: 750; color: Palette.ink; }
+                            HorizontalLayout {
+                                spacing: 6px;
+                                Choice { text: "$5"; active: root.bill == 0; clicked => { root.bill = 0; } }
+                                Choice { text: "$10"; active: root.bill == 1; clicked => { root.bill = 1; } }
+                                Choice { text: "$20"; active: root.bill == 2; clicked => { root.bill = 2; } }
+                                Choice { text: "$50"; active: root.bill == 3; clicked => { root.bill = 3; } }
+                                Choice { text: "$100"; active: root.bill == 4; clicked => { root.bill = 4; } }
+                            }
+                            count := Field { label: "Number of bills"; placeholder: "1 to 10,000"; }
+                            HorizontalLayout {
+                                spacing: 10px;
+                                ActionButton {
+                                    min-width: 0px;
+                                    horizontal-stretch: 1;
+                                    text: "Restock";
+                                    clicked => { if (Bank.cash-move(true, root.bill, count.text)) { count.clear(); } }
+                                }
+                                ActionButton {
+                                    min-width: 0px;
+                                    horizontal-stretch: 1;
+                                    text: "Remove";
+                                    kind: 1;
+                                    clicked => { if (Bank.cash-move(false, root.bill, count.text)) { count.clear(); } }
+                                }
+                            }
+                        }
+                    }
+                    ActionButton {
+                        text: "Reset to cash maximum";
+                        kind: 1;
+                        enabled: Bank.cash-over;
+                        clicked => { Bank.cash-reset(); }
+                    }
+                    Notice { text: Bank.message; ok: Bank.message-ok; }
+                    Rectangle { vertical-stretch: 1; }
+                }
+            }
+        }
+        if Bank.cash-tab == 1: PasswordPanel { }
+    }
+}

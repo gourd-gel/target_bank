@@ -1,0 +1,268 @@
+// The data the screens show and the actions they can ask for.
+//
+// `Bank` is the only connection between the screens and Rust (src/*.rs):
+// Rust fills in the properties and implements the callbacks. The screens
+// never decide anything; they display `Bank` and report taps.
+
+/// One row of a charge summary: "+ Exchange fee" .. "$3.00".
+export struct SumRow {
+    label: string,
+    amount: string,
+    total: bool,     // bold
+    line-above: bool,
+}
+
+// Screen numbers. Must match `mod screen` in src/main.rs.
+export global Screen {
+    out property <int> welcome: 0;
+    out property <int> entry: 1;
+    out property <int> menu: 2;
+    out property <int> balance: 3;
+    out property <int> fast-cash: 4;
+    out property <int> bills: 5;
+    out property <int> confirm: 6;
+    out property <int> result: 7;
+    out property <int> history: 8;
+    out property <int> limits: 9;
+    out property <int> staff-login: 10;
+    out property <int> teller: 11;
+    out property <int> cash: 12;
+    out property <int> family: 13;
+    out property <int> setup: 14;
+    out property <int> receipt-ask: 15;
+    out property <int> take-card: 16;
+    out property <int> take-cash: 17;
+}
+
+export global Bank {
+    // ---- shared -----------------------------------------------------------
+    in-out property <int> screen: 0;
+    /// Error or notice for the current screen. Empty hides it.
+    in-out property <string> message;
+    /// True when `message` is good news (shown green instead of red).
+    in-out property <bool> message-ok;
+    in-out property <string> clock;
+    /// Demo builds only: the wallet of sample cards and staff badges on the
+    /// welcome screen. Each item: [line 1, line 2, line 3, line 4, tone].
+    in-out property <[[string]]> demo-wallet;
+    /// Demo builds only: names for the "Customer" pickers on forms.
+    in-out property <[string]> demo-names;
+
+    // ---- customer -----------------------------------------------------------
+    in-out property <string> holder;
+    in-out property <string> account-masked;
+    /// "Individual", "Joint", "Youth" or "Guest", plus a currency code (header and balance screen).
+    in-out property <string> account-kind;
+    /// The account's currency code ("KRW"), for its flag on the balance screen.
+    in-out property <string> account-currency: "USD";
+    in-out property <string> balance;
+    in-out property <bool> frozen;
+    // Withdrawals and transfers paused by the activity check (see a teller).
+    in-out property <bool> on-hold;
+    /// Foreign-currency accounts: "Cash is paid in US dollars. Rate ...".
+    in-out property <string> balance-note;
+    /// Shows the Family button (this card is a guardian of a youth account).
+    in-out property <bool> is-guardian;
+    /// Another bank's card: the menu shows only withdraw, balance and limits.
+    in-out property <bool> is-guest;
+
+    // Keypad entry screen. Rust sets the wording for each use.
+    in-out property <string> entry-title;
+    in-out property <string> entry-hint;
+    /// What to draw in the box. Empty while a PIN is typed (dots instead).
+    in-out property <string> entry-display;
+    in-out property <string> entry-placeholder;
+    in-out property <bool> entry-masked;
+    in-out property <int> entry-length;
+    // Transfer screen: recent payees as "******1234  B. P." (empty otherwise).
+    in-out property <[string]> entry-choices;
+
+    // Bill choice ($5 / $10 / $20 / $50 / $100), for withdrawals and deposits.
+    in-out property <string> bills-title;
+    in-out property <string> bills-hint;
+    in-out property <[bool]> bill-enabled: [true, true, true, true, true];
+    in-out property <[string]> bill-captions: ["", "", "", "", ""];
+    /// Withdrawals only: offer "fewest bills" and "allow other bills".
+    in-out property <bool> bills-withdrawing;
+    /// "Mostly this bill, the rest in other bills" (BillChoice::Prefer).
+    in-out property <bool> bills-allow-mix;
+
+    // Confirmation and receipt screens.
+    in-out property <string> confirm-title;
+    in-out property <[string]> confirm-lines;
+    /// Cash + fees = total, shown as two columns on the confirm and receipt
+    /// screens, with the fee rules and rate in small print under it.
+    in-out property <[SumRow]> sum-rows;
+    in-out property <string> sum-note;
+    /// Optional middle button (e.g. "Add other bills"). Empty hides it.
+    in-out property <string> confirm-extra;
+    in-out property <bool> result-ok: true;
+    in-out property <string> result-title;
+    in-out property <[string]> result-lines;
+    /// The receipt after a withdrawal: the session is over, so only "Done".
+    in-out property <bool> result-final;
+    /// "3 × $20" on the take-your-cash screen.
+    in-out property <string> cash-bills;
+
+    // Tables: each row is a list of cells.
+    in-out property <[[string]]> history-rows;
+    in-out property <int> history-page;
+    in-out property <bool> history-more;
+    in-out property <[[string]]> limit-rows;
+
+    // Family (guardian) screen.
+    in-out property <[[string]]> youth-rows;
+    in-out property <int> youth-selected: -1;
+    in-out property <string> youth-title;
+    in-out property <[[string]]> youth-history-rows;
+    in-out property <string> youth-withdraw-cap;
+    in-out property <string> youth-transfer-cap;
+    in-out property <bool> youth-family-only;
+    in-out property <bool> youth-frozen;
+
+    // Inactivity warning ("Do you need more time?").
+    in-out property <bool> idle-warning;
+    in-out property <int> idle-seconds-left;
+
+    // ---- staff --------------------------------------------------------------
+    /// 1 = Teller Admin, 2 = Cash Handler (which login form is showing).
+    in-out property <int> staff-role: 1;
+    in-out property <string> staff-id;
+    /// Staff ID filled in by a demo badge. Empty for a normal sign-in.
+    in-out property <string> staff-prefill;
+    in-out property <int> teller-tab: 0;
+
+    in-out property <[[string]]> account-rows;
+    in-out property <string> selected-account;
+    /// Accounts tab: true shows one account's activity instead of the list.
+    in-out property <bool> activity-shown;
+    in-out property <string> activity-title: "Account activity";
+    in-out property <[[string]]> activity-rows;
+    in-out property <int> activity-page;
+    in-out property <bool> activity-more;
+    /// Open-an-account form: 0 individual, 1 joint holder, 2 youth, 3 add guardian,
+    /// 4 another bank's card (guest).
+    in-out property <int> open-kind: 0;
+    in-out property <[[string]]> locked-rows;
+    // Holds and approvals tab: accounts on hold, and which limit to raise (0 withdrawal, 1 deposit, 2 transfer).
+    in-out property <[[string]]> hold-rows;
+    in-out property <int> raise-kind: 0;
+    in-out property <string> limit-withdrawal;
+    in-out property <string> limit-deposit;
+    in-out property <string> limit-transfer;
+    in-out property <[[string]]> rate-rows;
+    in-out property <string> rate-currency: "EUR";
+    /// Currency code of each row of `rate-rows`, and the row picked.
+    in-out property <[string]> rate-codes;
+    in-out property <int> rate-selected: 0;
+    /// Each row's current rate ("" if none): shown as a hint when typing a new one.
+    in-out property <[string]> rate-current;
+    // Fee rules: percent and minimum ($) for each fee.
+    in-out property <string> rate-fee;
+    in-out property <string> rate-fee-min;
+    in-out property <string> rate-atm-fee;
+    in-out property <string> rate-atm-fee-min;
+    /// Exchange rates tab: true shows every past rate change instead.
+    in-out property <bool> rate-history-shown;
+    in-out property <[[string]]> rate-history-rows;
+    /// Exchange rates tab: true shows today's feed for review instead.
+    in-out property <bool> rate-feed-shown;
+    in-out property <string> rate-feed-hint;
+    in-out property <string> rate-feed-credit;
+    in-out property <[[string]]> rate-feed-rows;
+    in-out property <[[string]]> audit-rows;
+    in-out property <int> audit-page;
+    in-out property <bool> audit-more;
+    in-out property <[string]> integrity-lines;
+    in-out property <bool> integrity-ok;
+    in-out property <bool> integrity-ran;
+    /// Out of service (see the core's service.rs): red banner on the teller
+    /// screen; the welcome screen takes no cards and only the Teller Admin link works.
+    in-out property <bool> service-halted;
+    in-out property <string> service-since;
+    in-out property <string> service-reason;
+    /// What the automatic check at this sign-in found ("" = all good).
+    in-out property <string> signin-problem;
+
+    in-out property <int> cash-tab: 0;
+    in-out property <[[string]]> cash-rows;
+    in-out property <string> cash-total;
+    in-out property <string> cash-maximum;
+    in-out property <string> cash-limit;
+    in-out property <bool> cash-low;
+    in-out property <bool> cash-over;
+    in-out property <[string]> cash-warnings;
+
+    // ---- actions (implemented in Rust) ------------------------------------
+    callback start-customer();
+    /// Demo wallet: insert card / badge number i (Rust knows which is which).
+    callback insert-card(int);
+    /// Demo pickers: customer i's account number (true) or card number (false).
+    pure callback demo-number(bool, int) -> string;
+    callback start-staff(int);
+    callback key(string);
+    callback enter();
+    callback cancel();
+    /// Customer menu choices: "withdraw", "deposit", "transfer", "balance",
+    /// "history", "limits", "pin", "family", "fast60", "menu", "logout".
+    callback menu(string);
+    callback fast-cash(int);
+    /// 0-4 = $5..$100; 5 = fewest bills (mixed).
+    callback choose-bill(int);
+    callback confirm(bool);
+    callback confirm-extra-clicked();
+    callback receipt-choice(int);        // 0 = cancel, 1 = no receipt, 2 = receipt
+    callback take-card();
+    callback take-cash();
+    callback finish();                   // "Done" on the last receipt
+    callback history-turn(int);
+    callback more-time(bool);
+
+    // Guardian controls.
+    callback youth-select(int);
+    callback youth-save(string, string, bool);
+    callback youth-freeze(bool);
+    callback youth-move(string, bool);   // amount, true = to the child
+    callback entry-choice(int);          // send again to recent payee n
+
+    // First-run setup: teller id, password, repeat, handler id, password, repeat.
+    /// Returns true when setup succeeded (the form then clears itself).
+    callback setup(string, string, string, string, string, string) -> bool;
+
+    callback staff-login(string, string);
+    callback staff-logout();
+    /// Returns true when the password changed (the form then clears itself).
+    callback change-password(string, string, string) -> bool;
+    callback teller-open-tab(int);
+    /// kind, name, dob, pin, pin again, starting balance, account no., new guardian card,
+    /// currency, then the card and PIN of the holder at the counter who agrees
+    /// (joint, youth, guardian). Returns true on success (the form then clears itself).
+    callback open-account(int, string, string, string, string, string, string, string, string, string, string) -> bool;
+    callback view-activity(string);
+    callback activity-turn(int);
+    /// "freeze", "unfreeze", "close".
+    callback account-action(string, string);
+    callback unlock(string);
+    callback release-hold(string);             // account number
+    callback raise-limit(string, int, string); // account number, limit kind, extra dollars
+    callback save-limits(string, string, string);
+    /// (currency code, units per US dollar). Returns true on success.
+    callback save-rate(string, string) -> bool;
+    callback save-fee(string, string);      // exchange fee: percent, minimum
+    callback save-atm-fee(string, string);  // other bank's ATM fee: percent, minimum
+    /// Emergency stop: (currency code or "ALL", paused).
+    callback rate-pause(string, bool);
+    callback rate-show-history(bool);
+    /// Fetch today's feed and show it for review; approve sets it, cancel drops it.
+    callback rate-check-feed();
+    callback rate-approve-feed();
+    callback rate-cancel-feed();
+    callback audit-turn(int);
+    callback verify();
+    callback halt-service();
+    callback resume-service();
+    callback cash-open-tab(int);
+    /// Returns true on success (the form then clears itself).
+    callback cash-move(bool, int, string) -> bool;
+    callback cash-reset();
+}

@@ -1,0 +1,114 @@
+// Bank of CCNY ATM - the window.
+//
+// Files:
+//   bank.slint      data and actions shared with Rust (start here)
+//   theme.slint     colours and reusable widgets
+//   customer.slint  customer screens
+//   staff.slint     Teller Admin and Cash Handler screens
+//
+// No screen ever holds a customer PIN: the keypad sends each key to Rust,
+// which keeps the digits and only reports how many dots to draw.
+
+import { Bank, Screen } from "bank.slint";
+import { Palette, Header, ActionButton } from "theme.slint";
+import { WelcomeScreen, EntryScreen, MenuScreen, BalanceScreen, FastCashScreen, BillsScreen, ConfirmScreen, ReceiptAskScreen, TakeCardScreen, TakeCashScreen, ResultScreen, HistoryScreen, LimitsScreen, FamilyScreen } from "customer.slint";
+import { StaffLoginScreen, TellerScreen, CashScreen, SetupScreen } from "staff.slint";
+
+// Rust reaches the globals through the window.
+export { Bank, Screen }
+
+export component AppWindow inherits Window {
+    title: "Bank of CCNY ATM";
+    preferred-width: 1180px;
+    preferred-height: 780px;
+    min-width: 1080px;
+    min-height: 720px;
+    background: Palette.page;
+
+    VerticalLayout {
+        Header {
+            right-text: Bank.account-masked != "" ? Bank.account-kind + " " + Bank.account-masked + "   ·   " + Bank.clock
+                : Bank.staff-id != "" ? "Staff: " + Bank.staff-id + "   ·   " + Bank.clock
+                : Bank.clock;
+        }
+
+        Rectangle {
+            vertical-stretch: 1;
+            if Bank.screen == Screen.welcome: WelcomeScreen { width: parent.width; height: parent.height; }
+            if Bank.screen == Screen.entry: EntryScreen { width: parent.width; height: parent.height; }
+            if Bank.screen == Screen.menu: MenuScreen { width: parent.width; height: parent.height; }
+            if Bank.screen == Screen.balance: BalanceScreen { width: parent.width; height: parent.height; }
+            if Bank.screen == Screen.fast-cash: FastCashScreen { width: parent.width; height: parent.height; }
+            if Bank.screen == Screen.bills: BillsScreen { width: parent.width; height: parent.height; }
+            if Bank.screen == Screen.confirm: ConfirmScreen { width: parent.width; height: parent.height; }
+            if Bank.screen == Screen.receipt-ask: ReceiptAskScreen { width: parent.width; height: parent.height; }
+            if Bank.screen == Screen.take-card: TakeCardScreen { width: parent.width; height: parent.height; }
+            if Bank.screen == Screen.take-cash: TakeCashScreen { width: parent.width; height: parent.height; }
+            if Bank.screen == Screen.result: ResultScreen { width: parent.width; height: parent.height; }
+            if Bank.screen == Screen.history: HistoryScreen { width: parent.width; height: parent.height; }
+            if Bank.screen == Screen.limits: LimitsScreen { width: parent.width; height: parent.height; }
+            if Bank.screen == Screen.staff-login: StaffLoginScreen { width: parent.width; height: parent.height; }
+            if Bank.screen == Screen.teller: TellerScreen { width: parent.width; height: parent.height; }
+            if Bank.screen == Screen.cash: CashScreen { width: parent.width; height: parent.height; }
+            if Bank.screen == Screen.family: FamilyScreen { width: parent.width; height: parent.height; }
+            if Bank.screen == Screen.setup: SetupScreen { width: parent.width; height: parent.height; }
+        }
+
+        // Footer, as on a real machine.
+        Rectangle {
+            height: 40px;
+            background: #ebebed;
+            HorizontalLayout {
+                padding-left: 32px;
+                padding-right: 32px;
+                Text {
+                    text: "For your security, cover the keypad when entering your PIN.";
+                    font-size: 13px;
+                    color: Palette.faint;
+                    vertical-alignment: center;
+                }
+                Rectangle { horizontal-stretch: 1; }
+                Text {
+                    text: "Need help? See a teller inside the branch.";
+                    font-size: 13px;
+                    color: Palette.faint;
+                    vertical-alignment: center;
+                }
+            }
+        }
+    }
+
+    // "Do you need more time?" covers everything while it is showing.
+    if Bank.idle-warning: Rectangle {
+        background: #1e1430a0;
+        TouchArea { }   // swallow clicks on the dimmed background
+        Rectangle {
+            width: 520px;
+            height: 280px;
+            border-radius: 20px;
+            background: Palette.card;
+            drop-shadow-blur: 30px;
+            drop-shadow-color: #00000060;
+            VerticalLayout {
+                padding: 36px;
+                spacing: 14px;
+                alignment: center;
+                Text { text: "Do you need more time?"; font-size: 30px; font-weight: 800; color: Palette.ink; horizontal-alignment: center; }
+                Text {
+                    text: "For your security, this session ends in " + Bank.idle-seconds-left + " seconds.";
+                    font-size: 18px;
+                    color: Palette.body;
+                    horizontal-alignment: center;
+                    wrap: word-wrap;
+                }
+                Rectangle { height: 8px; }
+                HorizontalLayout {
+                    alignment: center;
+                    spacing: 16px;
+                    ActionButton { width: 190px; text: "End session"; kind: 1; clicked => { Bank.more-time(false); } }
+                    ActionButton { width: 190px; text: "Yes, continue"; clicked => { Bank.more-time(true); } }
+                }
+            }
+        }
+    }
+}

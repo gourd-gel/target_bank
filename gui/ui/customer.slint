@@ -1,0 +1,808 @@
+// Customer screens: welcome, keypad entry, menu, and every transaction.
+// Each screen only shows `Bank` properties and calls `Bank` callbacks.
+
+import { Bank } from "bank.slint";
+import { Palette, Type, EdgeButton, ActionButton, Tile, Keypad, Title, Notice, DataTable, Field, Toggle } from "theme.slint";
+import { Flags } from "flags.slint";
+
+// ---------------------------------------------------------------------------
+
+component BankCard inherits Rectangle {
+    callback clicked;
+    in property <string> caption: "Tap card to insert";
+    in property <string> caption-hover: "Click to insert";
+    /// False while out of service: greyed out, takes no taps.
+    in property <bool> enabled: true;
+    width: 340px;
+    height: 210px;
+    border-radius: 18px;
+    opacity: root.enabled ? 1 : 0.4;
+    background: !root.enabled
+        ? @linear-gradient(135deg, #8a8d8f 0%, #53565a 100%)
+        : touch.has-hover
+        ? @linear-gradient(135deg, #8b64d4 0%, #4f3189 100%)
+        : @linear-gradient(135deg, #7d55c7 0%, #452a7a 100%);
+    drop-shadow-blur: 24px;
+    drop-shadow-offset-y: 10px;
+    drop-shadow-color: #331a5c55;
+
+    Text {
+        x: 26px;
+        y: 22px;
+        text: "Bank of CCNY";
+        color: white;
+        font-size: 18px;
+        font-weight: 800;
+    }
+    Text {
+        x: parent.width - self.width - 26px;
+        y: 24px;
+        text: "DEBIT";
+        color: Palette.gold;
+        font-size: 13px;
+        font-weight: 800;
+        letter-spacing: 2px;
+    }
+    Rectangle {
+        x: 26px;
+        y: 76px;
+        width: 50px;
+        height: 38px;
+        border-radius: 7px;
+        background: @linear-gradient(135deg, #f6dc8d 0%, #d4a43a 100%);
+    }
+    Text {
+        x: 26px;
+        y: parent.height - 56px;
+        text: "••••  ••••  ••••  ••••";
+        color: #ffffffd0;
+        font-size: 19px;
+        letter-spacing: 1px;
+    }
+    Text {
+        x: 26px;
+        y: parent.height - 30px;
+        text: !root.enabled ? "Not accepting cards" : touch.has-hover ? root.caption-hover : root.caption;
+        color: Palette.gold;
+        font-size: 13px;
+        font-weight: 600;
+    }
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => { root.clicked(); }
+    }
+}
+
+/// Demo builds only: one card or staff badge in the demo wallet.
+/// `item` = [line 1, line 2, line 3, line 4, tone]; tone "0" = Bank of CCNY
+/// card, "1" = another bank's card, "2" = staff badge.
+component WalletCard inherits Rectangle {
+    in property <[string]> item;
+    callback clicked;
+    /// False while out of service (every item but the Teller Admin badge).
+    in property <bool> enabled: true;
+    width: 152px;
+    height: 92px;
+    border-radius: 12px;
+    opacity: root.enabled ? 1 : 0.35;
+    // Staff badges in CCNY gray, other banks' cards in teal, ours in CCNY purple.
+    background: item[4] == "2"
+        ? (touch.has-hover ? #686d6e : Palette.gray)
+        : item[4] == "1"
+        ? (touch.has-hover ? @linear-gradient(135deg, #1b8a7f 0%, #155e57 100%) : @linear-gradient(135deg, #167a70 0%, #114c46 100%))
+        : (touch.has-hover ? @linear-gradient(135deg, #8b64d4 0%, #4f3189 100%) : @linear-gradient(135deg, #7d55c7 0%, #452a7a 100%));
+    drop-shadow-blur: touch.has-hover ? 14px : 8px;
+    drop-shadow-offset-y: 4px;
+    drop-shadow-color: #331a5c40;
+    VerticalLayout {
+        padding: 10px;
+        padding-top: 8px;
+        spacing: 1px;
+        Text { text: item[0]; color: white; font-size: 14px; font-weight: 800; overflow: elide; }
+        Text { text: item[1]; color: Palette.gold; font-size: 11.5px; font-weight: 600; overflow: elide; }
+        Rectangle { vertical-stretch: 1; }
+        Text { text: item[2]; color: #ffffffe8; font-size: 11px; font-family: "monospace"; overflow: elide; }
+        Text { text: item[3]; color: #ffffffa8; font-size: 10.5px; font-family: "monospace"; overflow: elide; }
+    }
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => { root.clicked(); }
+    }
+}
+
+export component WelcomeScreen inherits Rectangle {
+    property <bool> demo: Bank.demo-wallet.length > 0;
+    // Out of service: no cards; only the Teller Admin can sign in (the core refuses the rest too).
+    property <bool> halted: Bank.service-halted;
+    clip: true;
+    // Soft brand shapes behind the card.
+    Rectangle {
+        x: parent.width * 0.52;
+        y: -parent.height * 0.35;
+        width: parent.height * 1.5;
+        height: parent.height * 1.5;
+        border-radius: self.width / 2;
+        background: @radial-gradient(circle, #e2d8f4 0%, #f5f5f600 70%);
+    }
+    Rectangle {
+        x: parent.width * 0.60;
+        y: parent.height * 0.55;
+        width: parent.height * 0.9;
+        height: parent.height * 0.9;
+        border-radius: self.width / 2;
+        background: @radial-gradient(circle, #f7e59a 0%, #f5f5f600 65%);
+        opacity: 0.7;
+    }
+    VerticalLayout {
+        padding-left: 56px;
+        padding-right: 56px;
+        padding-top: root.demo ? 22px : 56px;
+        padding-bottom: root.demo ? 50px : 56px;
+        spacing: 16px;
+        HorizontalLayout {
+            spacing: 48px;
+            vertical-stretch: 1;
+            VerticalLayout {
+                alignment: center;
+                spacing: root.demo ? 10px : 18px;
+                horizontal-stretch: 1;
+                Text {
+                    text: root.halted ? "Out of service" : "Welcome";
+                    font-size: root.demo ? 44px : 56px;
+                    font-weight: 800;
+                    color: root.halted ? Palette.bad : Palette.ink;
+                }
+                Text {
+                    text: root.halted
+                        ? "This ATM is temporarily out of service. Please use another ATM."
+                        : "Insert your card to get started.";
+                    font-size: 22px;
+                    color: Palette.body;
+                    wrap: word-wrap;
+                }
+                Rectangle { height: 4px; }
+                if !root.halted: HorizontalLayout {
+                    spacing: 10px;
+                    alignment: start;
+                    Rectangle { width: 4px; background: Palette.gold; border-radius: 2px; }
+                    Text {
+                        text: "Withdraw · Deposit · Transfer · Check balance";
+                        font-size: 16px;
+                        color: Palette.faint;
+                        vertical-alignment: center;
+                    }
+                }
+                Rectangle { height: 4px; }
+                Notice { text: Bank.message; ok: Bank.message-ok; }
+            }
+            VerticalLayout {
+                alignment: center;
+                // No wallet (real build): tap, then type the card number.
+                BankCard { enabled: !root.halted; clicked => { Bank.start-customer(); } }
+            }
+        }
+        // Demo builds only: click a card to "insert" it. Only the PIN is typed.
+        if root.demo: HorizontalLayout {
+            alignment: center;
+            vertical-stretch: 0;
+            Rectangle {
+                width: 6 * 152px + 5 * 10px + 28px;
+                height: 14px + 18px + 8px + ceil(Bank.demo-wallet.length / 6) * 102px - 10px + 14px;
+                border-radius: 14px;
+                background: Palette.warn-soft;
+                border-width: 1px;
+                border-color: Palette.warn.with-alpha(0.4);
+                Text {
+                    x: 14px;
+                    y: 12px;
+                    text: "DEMO WALLET (not in the real build): click a card to insert it, then type its PIN. Staff badges fill in the staff ID.";
+                    font-size: 13px;
+                    font-weight: 800;
+                    color: Palette.warn;
+                }
+                for item[i] in Bank.demo-wallet: WalletCard {
+                    x: 14px + mod(i, 6) * 162px;
+                    y: 14px + 18px + 8px + floor(i / 6) * 102px;
+                    item: item;
+                    enabled: !root.halted || (item[4] == "2" && item[0] == "Teller Admin");
+                    clicked => { Bank.insert-card(i); }
+                }
+            }
+        }
+    }
+    // Staff entrance, deliberately small and out of the way.
+    HorizontalLayout {
+        width: self.preferred-width;
+        height: self.preferred-height;
+        x: parent.width - self.width - 28px;
+        y: parent.height - self.height - 22px;
+        spacing: 18px;
+        Text { text: "Staff:"; color: Palette.faint; font-size: 14px; vertical-alignment: center; }
+        staff1 := Text {
+            text: "Teller Admin";
+            color: t1.has-hover ? Palette.brand : Palette.faint;
+            font-size: 14px;
+            font-weight: 600;
+            vertical-alignment: center;
+            t1 := TouchArea { mouse-cursor: pointer; clicked => { Bank.staff-prefill = ""; Bank.start-staff(1); } }
+        }
+        Text {
+            text: "Cash Handler";
+            color: t2.has-hover ? Palette.brand : Palette.faint;
+            opacity: root.halted ? 0.4 : 1;
+            font-size: 14px;
+            font-weight: 600;
+            vertical-alignment: center;
+            t2 := TouchArea {
+                enabled: !root.halted;
+                mouse-cursor: root.halted ? default : pointer;
+                clicked => { Bank.staff-prefill = ""; Bank.start-staff(2); }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+
+/// Number entry with the on-screen keypad. Also takes the physical keyboard:
+/// digits, Backspace, Enter and Esc.
+export component EntryScreen inherits FocusScope {
+    init => { self.focus(); }
+    key-pressed(event) => {
+        if (event.text == Key.Return) {
+            Bank.enter();
+            return accept;
+        }
+        if (event.text == Key.Escape) {
+            Bank.cancel();
+            return accept;
+        }
+        if (event.text == Key.Backspace) {
+            Bank.key("back");
+            return accept;
+        }
+        Bank.key(event.text);
+        accept
+    }
+
+    HorizontalLayout {
+        width: parent.width;
+        height: parent.height;
+        padding: 56px;
+        spacing: 56px;
+        VerticalLayout {
+            alignment: center;
+            spacing: 22px;
+            horizontal-stretch: 1;
+            Title { text: Bank.entry-title; hint: Bank.entry-hint; }
+            // Send again: recent payees, newest first.
+            if Bank.entry-choices.length > 0: VerticalLayout {
+                spacing: 8px;
+                Text { text: "Send again"; font-size: 15px; font-weight: 700; color: Palette.body; }
+                for choice[i] in Bank.entry-choices: ActionButton {
+                    text: choice;
+                    kind: 1;
+                    clicked => { Bank.entry-choice(i); }
+                }
+                Text { text: "Or type an account number:"; font-size: 15px; color: Palette.body; }
+            }
+            Rectangle {
+                height: 78px;
+                border-radius: 14px;
+                background: Palette.card;
+                border-width: 2px;
+                border-color: Palette.brand;
+                drop-shadow-blur: 8px;
+                drop-shadow-offset-y: 2px;
+                drop-shadow-color: #4b268320;
+
+                if !Bank.entry-masked: Text {
+                    text: Bank.entry-display == "" ? Bank.entry-placeholder : Bank.entry-display;
+                    font-size: 34px;
+                    font-weight: 650;
+                    letter-spacing: 3px;
+                    color: Bank.entry-display == "" ? Palette.line : Palette.ink;
+                }
+                if Bank.entry-masked: HorizontalLayout {
+                    alignment: center;
+                    spacing: 16px;
+                    // Four empty circles that fill in as digits are typed
+                    // (up to six for longer PINs).
+                    for i in max(4, Bank.entry-length): VerticalLayout {
+                        alignment: center;
+                        Rectangle {
+                            width: 18px;
+                            height: 18px;
+                            border-radius: 9px;
+                            background: i < Bank.entry-length ? Palette.brand : transparent;
+                            border-width: 2px;
+                            border-color: i < Bank.entry-length ? Palette.brand : Palette.line;
+                        }
+                    }
+                }
+            }
+            Notice { text: Bank.message; ok: Bank.message-ok; }
+        }
+        VerticalLayout {
+            alignment: center;
+            Keypad {
+                key(k) => { Bank.key(k); }
+                enter => { Bank.enter(); }
+                cancel => { Bank.cancel(); }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+
+export component MenuScreen inherits Rectangle {
+    VerticalLayout {
+        padding: 48px;
+        padding-top: 40px;
+        spacing: 26px;
+        Title {
+            text: "Hello, " + Bank.holder;
+            hint: Bank.frozen ? "This account is frozen: deposits only. Please see a teller (or your parent or guardian)."
+                : Bank.on-hold ? "For your protection, withdrawals and transfers are paused. Please see a teller inside the branch."
+                : Bank.is-guest ? "Welcome. This card is from another bank: withdrawals have an ATM fee."
+                : "What would you like to do today?";
+        }
+        HorizontalLayout {
+            spacing: 36px;
+            vertical-stretch: 1;
+            VerticalLayout {
+                alignment: center;
+                spacing: 16px;
+                // Other banks' cards (guests): withdraw, balance and limits only.
+                EdgeButton { text: "Withdraw cash"; clicked => { Bank.menu("withdraw"); } }
+                if !Bank.is-guest: EdgeButton { text: "Deposit cash"; clicked => { Bank.menu("deposit"); } }
+                if !Bank.is-guest: EdgeButton { text: "Transfer money"; clicked => { Bank.menu("transfer"); } }
+                EdgeButton { text: "Balance inquiry"; clicked => { Bank.menu("balance"); } }
+            }
+            VerticalLayout {
+                alignment: center;
+                spacing: 16px;
+                EdgeButton { right-side: true; text: "Fast Cash $60"; clicked => { Bank.menu("fast60"); } }
+                if !Bank.is-guest: EdgeButton { right-side: true; text: "Recent transactions"; clicked => { Bank.menu("history"); } }
+                EdgeButton { right-side: true; text: "Daily limits"; clicked => { Bank.menu("limits"); } }
+                if !Bank.is-guest: EdgeButton { right-side: true; text: "Change PIN"; clicked => { Bank.menu("pin"); } }
+            }
+        }
+        Notice { text: Bank.message; ok: Bank.message-ok; }
+        HorizontalLayout {
+            spacing: 18px;
+            if Bank.is-guardian: ActionButton { text: "Family accounts"; kind: 1; clicked => { Bank.menu("family"); } }
+            Rectangle { horizontal-stretch: 1; }
+            ActionButton { text: "Log out and return card"; kind: 2; clicked => { Bank.menu("logout"); } }
+        }
+    }
+}
+
+/// Bottom row shared by the end-of-transaction screens.
+component DoneButtons inherits HorizontalLayout {
+    alignment: center;
+    spacing: 18px;
+    ActionButton { width: 260px; text: "Another transaction"; clicked => { Bank.menu("menu"); } }
+    ActionButton { width: 260px; text: "Log out"; kind: 1; clicked => { Bank.menu("logout"); } }
+}
+
+export component BalanceScreen inherits Rectangle {
+    VerticalLayout {
+        padding: 56px;
+        alignment: center;
+        spacing: 28px;
+        HorizontalLayout {
+            alignment: center;
+            Rectangle {
+                width: 600px;
+                height: Bank.balance-note == "" ? 250px : 310px;
+                border-radius: 20px;
+                background: Palette.card;
+                border-width: 1px;
+                border-color: Palette.line;
+                drop-shadow-blur: 16px;
+                drop-shadow-offset-y: 4px;
+                drop-shadow-color: #1e143018;
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 10px;
+                    HorizontalLayout {
+                        alignment: center;
+                        spacing: 10px;
+                        Rectangle {
+                            width: 28px;
+                            height: 21px;
+                            border-width: 1px;
+                            border-color: Palette.line;
+                            Image { source: Flags.of(Bank.account-currency); width: 28px; height: 21px; image-fit: fill; }
+                        }
+                        Text { text: "Available balance"; font-size: 18px; color: Palette.body; vertical-alignment: center; }
+                    }
+                    Text { text: Bank.balance; font-size: 64px; font-weight: 800; color: Palette.brand-dark; horizontal-alignment: center; }
+                    Text { text: Bank.account-kind + " account  " + Bank.account-masked; font-size: 16px; color: Palette.faint; horizontal-alignment: center; }
+                    if Bank.frozen: Text { text: "Frozen: money can't be taken out right now"; font-size: 15px; font-weight: 700; color: Palette.bad; horizontal-alignment: center; }
+                    if Bank.balance-note != "": Text { text: Bank.balance-note; font-size: 15px; color: Palette.body; horizontal-alignment: center; wrap: word-wrap; }
+                }
+            }
+        }
+        DoneButtons { }
+    }
+}
+
+// ---------------------------------------------------------------------------
+
+export component FastCashScreen inherits Rectangle {
+    VerticalLayout {
+        padding: 48px;
+        padding-top: 40px;
+        spacing: 26px;
+        Title { text: "How much would you like?"; hint: "You will choose the bills next."; }
+        // Centred in the space left between the title and the buttons.
+        VerticalLayout {
+            vertical-stretch: 1;
+            alignment: center;
+            GridLayout {
+                spacing: 18px;
+                Row {
+                    Tile { text: "$20"; clicked => { Bank.fast-cash(20); } }
+                    Tile { text: "$40"; clicked => { Bank.fast-cash(40); } }
+                    Tile { text: "$60"; clicked => { Bank.fast-cash(60); } }
+                }
+                Row {
+                    Tile { text: "$100"; clicked => { Bank.fast-cash(100); } }
+                    Tile { text: "$200"; clicked => { Bank.fast-cash(200); } }
+                    Tile { text: "$400"; clicked => { Bank.fast-cash(400); } }
+                }
+            }
+        }
+        Notice { text: Bank.message; ok: Bank.message-ok; }
+        HorizontalLayout {
+            spacing: 18px;
+            ActionButton { text: "Cancel"; kind: 1; clicked => { Bank.menu("menu"); } }
+            Rectangle { horizontal-stretch: 1; }
+            ActionButton { text: "Other amount"; clicked => { Bank.fast-cash(0); } }
+        }
+    }
+}
+
+export component BillsScreen inherits Rectangle {
+    VerticalLayout {
+        padding: 48px;
+        padding-top: 40px;
+        spacing: 22px;
+        Title { text: Bank.bills-title; hint: Bank.bills-hint; }
+        VerticalLayout {
+            vertical-stretch: 1;
+            alignment: center;
+            spacing: 18px;
+            HorizontalLayout {
+                spacing: 16px;
+                Tile { text: "$5"; caption: Bank.bill-captions[0]; enabled: Bank.bill-enabled[0]; clicked => { Bank.choose-bill(0); } }
+                Tile { text: "$10"; caption: Bank.bill-captions[1]; enabled: Bank.bill-enabled[1]; clicked => { Bank.choose-bill(1); } }
+                Tile { text: "$20"; caption: Bank.bill-captions[2]; enabled: Bank.bill-enabled[2]; clicked => { Bank.choose-bill(2); } }
+                Tile { text: "$50"; caption: Bank.bill-captions[3]; enabled: Bank.bill-enabled[3]; clicked => { Bank.choose-bill(3); } }
+                Tile { text: "$100"; caption: Bank.bill-captions[4]; enabled: Bank.bill-enabled[4]; clicked => { Bank.choose-bill(4); } }
+            }
+            // Withdrawals: mixed bills (our extra feature on top of the spec's single bill).
+            if Bank.bills-withdrawing: HorizontalLayout {
+                spacing: 24px;
+                Toggle {
+                    text: "Mostly the bill I pick, rest in other bills";
+                    checked <=> Bank.bills-allow-mix;
+                    toggled => { Bank.choose-bill(-1); }   // Rust re-labels the tiles
+                }
+                Rectangle { horizontal-stretch: 1; }
+                Tile {
+                    width: 300px;
+                    text: "Fewest bills";
+                    caption: "Any mix of bills";
+                    clicked => { Bank.choose-bill(5); }
+                }
+            }
+        }
+        Notice { text: Bank.message; ok: Bank.message-ok; }
+        HorizontalLayout {
+            alignment: start;
+            ActionButton { text: "Cancel"; kind: 1; clicked => { Bank.menu("menu"); } }
+        }
+    }
+}
+
+/// Withdrawal / + fee / Total, amounts right-aligned; small print below.
+component SumTable inherits VerticalLayout {
+    spacing: 8px;
+    for row in Bank.sum-rows: VerticalLayout {
+        spacing: 8px;
+        if row.line-above: Rectangle { height: 1px; background: Palette.line; }
+        HorizontalLayout {
+            Text {
+                text: row.label;
+                font-size: 19px;
+                font-weight: row.total ? 700 : 400;
+                color: row.total ? Palette.ink : Palette.body;
+                horizontal-stretch: 1;
+            }
+            Text {
+                text: row.amount;
+                font-size: 19px;
+                font-weight: row.total ? 700 : 400;
+                color: row.total ? Palette.ink : Palette.body;
+                horizontal-alignment: right;
+            }
+        }
+    }
+    if Bank.sum-note != "": Text {
+        text: Bank.sum-note;
+        font-size: 13px;
+        color: Palette.faint;
+        horizontal-alignment: right;
+        wrap: word-wrap;
+    }
+}
+
+export component ConfirmScreen inherits Rectangle {
+    VerticalLayout {
+        padding: 56px;
+        alignment: center;
+        spacing: 28px;
+        HorizontalLayout {
+            alignment: center;
+            Rectangle {
+                width: 680px;
+                border-radius: 20px;
+                background: Palette.card;
+                border-width: 1px;
+                border-color: Palette.line;
+                drop-shadow-blur: 16px;
+                drop-shadow-offset-y: 4px;
+                drop-shadow-color: #1e143018;
+                VerticalLayout {
+                    padding: 36px;
+                    spacing: 14px;
+                    Text { text: Bank.confirm-title; font-size: 28px; font-weight: 750; color: Palette.ink; wrap: word-wrap; }
+                    Rectangle { height: 1px; background: Palette.line; }
+                    for line in Bank.confirm-lines: Text { text: line; font-size: 19px; color: Palette.body; wrap: word-wrap; }
+                    if Bank.sum-rows.length > 0: SumTable { }
+                }
+            }
+        }
+        Notice { text: Bank.message; ok: Bank.message-ok; }
+        HorizontalLayout {
+            alignment: center;
+            spacing: 18px;
+            ActionButton { width: 220px; text: "Cancel"; kind: 1; clicked => { Bank.confirm(false); } }
+            if Bank.confirm-extra != "": ActionButton { width: 220px; text: Bank.confirm-extra; kind: 1; clicked => { Bank.confirm-extra-clicked(); } }
+            ActionButton { width: 220px; text: "Confirm"; clicked => { Bank.confirm(true); } }
+        }
+    }
+}
+
+/// After Confirm, before any money moves: "Would you like a receipt?"
+export component ReceiptAskScreen inherits Rectangle {
+    VerticalLayout {
+        padding: 56px;
+        alignment: center;
+        spacing: 26px;
+        Text { text: "Would you like a receipt?"; font-size: 34px; font-weight: 800; color: Palette.ink; horizontal-alignment: center; }
+        Text {
+            text: "It shows the amount, any fees, your balance after and a reference number.";
+            font-size: 19px;
+            color: Palette.body;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+        }
+        HorizontalLayout {
+            alignment: center;
+            spacing: 18px;
+            ActionButton { width: 220px; text: "Cancel"; kind: 1; clicked => { Bank.receipt-choice(0); } }
+            ActionButton { width: 220px; text: "No receipt"; kind: 1; clicked => { Bank.receipt-choice(1); } }
+            ActionButton { width: 220px; text: "Yes, print one"; clicked => { Bank.receipt-choice(2); } }
+        }
+    }
+}
+
+/// A withdrawal hands the card back before the cash: people who already have
+/// their money tend to walk off without the card (SEv3 §3.2.1).
+export component TakeCardScreen inherits Rectangle {
+    VerticalLayout {
+        padding: 48px;
+        alignment: center;
+        spacing: 24px;
+        Text { text: "Please take your card"; font-size: 34px; font-weight: 800; color: Palette.ink; horizontal-alignment: center; }
+        Text { text: "Your cash comes out next."; font-size: 19px; color: Palette.body; horizontal-alignment: center; }
+        HorizontalLayout {
+            alignment: center;
+            BankCard {
+                caption: "Tap card to take it";
+                caption-hover: "Click to take your card";
+                clicked => { Bank.take-card(); }
+            }
+        }
+    }
+}
+
+/// A small stack of bills to click.
+component CashStack inherits Rectangle {
+    callback clicked;
+    width: 300px;
+    height: 170px;
+    for n[i] in 3: Rectangle {
+        x: i * 14px;
+        y: (2 - i) * 12px;
+        width: 260px;
+        height: 120px;
+        border-radius: 10px;
+        background: @linear-gradient(135deg, #3f9a68 0%, #24704a 100%);
+        border-width: 2px;
+        border-color: #1d5c3a;
+        Text { text: "$"; color: #ffffffd0; font-size: 46px; font-weight: 800; }
+    }
+    Text {
+        y: parent.height - 20px;
+        text: touch.has-hover ? "Click to take your cash" : "Tap the cash to take it";
+        color: Palette.brand;
+        font-size: 14px;
+        font-weight: 600;
+    }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+export component TakeCashScreen inherits Rectangle {
+    VerticalLayout {
+        padding: 48px;
+        alignment: center;
+        spacing: 24px;
+        Text { text: "Please take your cash"; font-size: 34px; font-weight: 800; color: Palette.ink; horizontal-alignment: center; }
+        Text { text: Bank.cash-bills; font-size: 21px; color: Palette.body; horizontal-alignment: center; }
+        HorizontalLayout {
+            alignment: center;
+            CashStack { clicked => { Bank.take-cash(); } }
+        }
+    }
+}
+
+export component ResultScreen inherits Rectangle {
+    VerticalLayout {
+        padding: 32px;
+        alignment: center;
+        spacing: 14px;
+        HorizontalLayout {
+            alignment: center;
+            Rectangle {
+                width: 84px;
+                height: 84px;
+                border-radius: 42px;
+                background: Bank.result-ok ? Palette.ok-soft : Palette.bad-soft;
+                Text {
+                    text: Bank.result-ok ? "✓" : "!";
+                    font-size: 44px;
+                    font-weight: 800;
+                    color: Bank.result-ok ? Palette.ok : Palette.bad;
+                }
+            }
+        }
+        Text { text: Bank.result-title; font-size: 34px; font-weight: 800; color: Palette.ink; horizontal-alignment: center; wrap: word-wrap; }
+        if Bank.sum-rows.length > 0: HorizontalLayout {
+            alignment: center;
+            SumTable { width: 520px; }
+        }
+        for line in Bank.result-lines: Text { text: line; font-size: 19px; color: Palette.body; horizontal-alignment: center; wrap: word-wrap; }
+        Rectangle { height: 12px; }
+        if !Bank.result-final: DoneButtons { }
+        if Bank.result-final: HorizontalLayout {
+            alignment: center;
+            ActionButton { width: 260px; text: "Done"; clicked => { Bank.finish(); } }
+        }
+    }
+}
+
+export component HistoryScreen inherits Rectangle {
+    VerticalLayout {
+        padding: 48px;
+        padding-top: 40px;
+        spacing: 22px;
+        Title { text: "Recent transactions"; hint: "10 per page, newest first. Page " + (Bank.history-page + 1) + "."; }
+        DataTable {
+            vertical-stretch: 1;
+            headers: ["Date and time", "Description", "Amount"];
+            widths: [0.28, 0.50, 0.22];
+            rows: Bank.history-rows;
+            empty-text: "No transactions yet.";
+        }
+        HorizontalLayout {
+            spacing: 14px;
+            ActionButton { text: "Newer"; kind: 1; enabled: Bank.history-page > 0; clicked => { Bank.history-turn(-1); } }
+            ActionButton { text: "Older"; kind: 1; enabled: Bank.history-more; clicked => { Bank.history-turn(1); } }
+            Rectangle { horizontal-stretch: 1; }
+        }
+        DoneButtons { }
+    }
+}
+
+export component LimitsScreen inherits Rectangle {
+    VerticalLayout {
+        padding: 48px;
+        padding-top: 40px;
+        spacing: 22px;
+        Title { text: "Your daily limits"; hint: "Limits reset at midnight, New York time. Everyone on a joint account shares them."; }
+        DataTable {
+            height: 42px + 3 * 40px + 2px;
+            headers: ["", "Daily limit", "Used today", "Left today"];
+            widths: [0.25, 0.25, 0.25, 0.25];
+            rows: Bank.limit-rows;
+        }
+        Rectangle { vertical-stretch: 1; }
+        DoneButtons { }
+    }
+}
+
+// ---------------------------------------------------------------------------
+
+/// Guardian controls for youth accounts (our extra feature).
+export component FamilyScreen inherits Rectangle {
+    VerticalLayout {
+        padding: 40px;
+        padding-top: 20px;
+        padding-bottom: 20px;
+        spacing: 12px;
+        Title { text: "Family accounts"; hint: "Youth accounts you are a guardian of. Pick one to see its activity, change its controls or move money."; }
+        DataTable {
+            height: 42px + 2 * 40px + 2px;
+            headers: ["Child", "Account", "Balance", "Withdraw cap", "Transfer cap", "Transfers", "Status"];
+            widths: [0.18, 0.16, 0.13, 0.14, 0.14, 0.13, 0.12];
+            rows: Bank.youth-rows;
+            clickable: true;
+            selected: Bank.youth-selected;
+            row-clicked(r) => { Bank.youth-select(r); }
+        }
+        if Bank.youth-selected >= 0: HorizontalLayout {
+            spacing: 18px;
+            vertical-stretch: 1;
+            VerticalLayout {
+                horizontal-stretch: 1.3;
+                spacing: 8px;
+                Text { text: Bank.youth-title; font-size: 15px; font-weight: 700; color: Palette.body; }
+                DataTable {
+                    vertical-stretch: 1;
+                    headers: ["Date and time", "Description", "Amount"];
+                    widths: [0.24, 0.58, 0.18];
+                    rows: Bank.youth-history-rows;
+                    empty-text: "No transactions yet.";
+                }
+            }
+            VerticalLayout {
+                horizontal-stretch: 1;
+                spacing: 12px;
+                HorizontalLayout {
+                    spacing: 12px;
+                    wcap := Field { label: "Daily withdrawal cap ($)"; text <=> Bank.youth-withdraw-cap; }
+                    tcap := Field { label: "Daily transfer cap ($)"; text <=> Bank.youth-transfer-cap; }
+                }
+                fam := Toggle { text: "Transfers only to parents / guardians"; checked <=> Bank.youth-family-only; }
+                HorizontalLayout {
+                    spacing: 12px;
+                    ActionButton { text: "Save controls"; clicked => { Bank.youth-save(wcap.text, tcap.text, fam.checked); } }
+                    if !Bank.youth-frozen: ActionButton { text: "Freeze"; kind: 2; clicked => { Bank.youth-freeze(true); } }
+                    if Bank.youth-frozen: ActionButton { text: "Unfreeze"; kind: 1; clicked => { Bank.youth-freeze(false); } }
+                }
+                // Move money between your own account and the child's.
+                HorizontalLayout {
+                    spacing: 12px;
+                    move := Field { width: 130px; label: "Move money"; placeholder: Bank.account-currency == "USD" ? "$0.00" : "0.00 " + Bank.account-currency; }
+                    VerticalLayout { alignment: end; ActionButton { text: "To child"; kind: 1; clicked => { Bank.youth-move(move.text, true); } } }
+                    VerticalLayout { alignment: end; ActionButton { text: "Back to me"; kind: 1; clicked => { Bank.youth-move(move.text, false); } } }
+                }
+                Rectangle { vertical-stretch: 1; }
+            }
+        }
+        if Bank.youth-selected < 0: Rectangle { vertical-stretch: 1; }
+        Notice { text: Bank.message; ok: Bank.message-ok; }
+        DoneButtons { }
+    }
+}
