@@ -460,6 +460,7 @@ pub(crate) fn verify(conn: &Connection) -> Result<IntegrityReport> {
 }
 
 /// Rows touching one account, newest first, one page at a time.
+/// GUI activity only; amounts are requested principal, with financial entries kept internal.
 /// `transactions_only`: deposits/withdrawals/transfers (customer view).
 pub(crate) fn for_account(
     conn: &Connection,
@@ -472,13 +473,19 @@ pub(crate) fn for_account(
     // Fixed SQL; the filter switch is itself a bound parameter.
     let mut stmt = conn.prepare(
         "SELECT l.seq, l.ts, l.actor, l.action, a.account_lookup, a.account_enc,
-                c.account_lookup, c.account_enc, l.amount_cents, l.detail, COALESCE(v.currency, a.currency, 'USD')
+                c.account_lookup, c.account_enc,
+                CASE WHEN l.action IN ('deposit', 'withdrawal', 'hold_placed') THEN l.usd_cents ELSE l.amount_cents END,
+                l.detail, CASE WHEN l.action IN ('deposit', 'withdrawal', 'hold_placed') THEN 'USD' ELSE COALESCE(a.currency, 'USD') END
          FROM audit_log l
-         LEFT JOIN revenue_ledger v ON v.audit_seq = l.seq
          LEFT JOIN accounts a ON a.id = l.account_id
          LEFT JOIN accounts c ON c.id = l.counterparty_id
          WHERE (l.account_id = ?1 OR l.counterparty_id = ?1)
-           AND (?2 = 0 OR l.action IN ('deposit', 'withdrawal', 'transfer', 'processing_fee'))
+           AND (?2 = 0 OR l.action IN ('deposit', 'withdrawal', 'transfer'))
+           AND l.action NOT IN ('processing_fee', 'revenue_credit', 'revenue_debit')
+           AND (l.actor LIKE 'customer:%' OR l.actor LIKE 'admin:%' OR l.actor LIKE 'handler:%'
+                OR (l.actor = 'anonymous' AND l.detail NOT LIKE 'bank authorities%')
+                OR (l.actor IN ('system', 'system:activity-check')
+                    AND l.action IN ('setup', 'card_locked', 'hold_placed', 'service_halted', 'service_resumed')))
          ORDER BY l.seq DESC LIMIT ?3 OFFSET ?4",
     )?;
     let mut rows = stmt.query(params![account_id, transactions_only, page_size, offset])?;
@@ -516,16 +523,23 @@ pub(crate) fn for_customer(
         .collect())
 }
 
-/// Every event (all accounts, logins, cash, admin), newest first, one page at a time.
+/// GUI user activity (all accounts, logins, cash, staff), newest first.
+/// Internal fee, revenue, maintenance and administrative records are not displayed.
 pub(crate) fn recent(conn: &Connection, page_size: u32, page: u32) -> Result<Vec<Row>> {
     let offset = i64::from(page) * i64::from(page_size);
     let mut stmt = conn.prepare(
         "SELECT l.seq, l.ts, l.actor, l.action, a.account_lookup, a.account_enc,
-                c.account_lookup, c.account_enc, l.amount_cents, l.detail, COALESCE(v.currency, a.currency, 'USD')
+                c.account_lookup, c.account_enc,
+                CASE WHEN l.action IN ('deposit', 'withdrawal', 'hold_placed') THEN l.usd_cents ELSE l.amount_cents END,
+                l.detail, CASE WHEN l.action IN ('deposit', 'withdrawal', 'hold_placed') THEN 'USD' ELSE COALESCE(a.currency, 'USD') END
          FROM audit_log l
-         LEFT JOIN revenue_ledger v ON v.audit_seq = l.seq
          LEFT JOIN accounts a ON a.id = l.account_id
          LEFT JOIN accounts c ON c.id = l.counterparty_id
+         WHERE l.action NOT IN ('processing_fee', 'revenue_credit', 'revenue_debit')
+           AND (l.actor LIKE 'customer:%' OR l.actor LIKE 'admin:%' OR l.actor LIKE 'handler:%'
+                OR (l.actor = 'anonymous' AND l.detail NOT LIKE 'bank authorities%')
+                OR (l.actor IN ('system', 'system:activity-check')
+                    AND l.action IN ('setup', 'card_locked', 'hold_placed', 'service_halted', 'service_resumed')))
          ORDER BY l.seq DESC LIMIT ?1 OFFSET ?2",
     )?;
     let mut rows = stmt.query(params![page_size, offset])?;
@@ -546,16 +560,28 @@ fn read_row(r: &rusqlite::Row) -> Result<Row> {
         }
     };
     let amount: Option<i64> = r.get(8)?;
+    let action: String = r.get(3)?;
+    let mut detail: String = r.get(9)?;
+    if action == "deposit" || action == "withdrawal" {
+        detail = detail
+            .split("; ")
+            .filter(|part| {
+                let lower = part.to_ascii_lowercase();
+                !lower.starts_with("exchange fee ") && !lower.starts_with("other bank's atm fee ")
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+    }
     Ok(Row {
         seq: r.get(0)?,
         ts: r.get(1)?,
         actor: r.get(2)?,
-        action: r.get(3)?,
+        action,
         account_number: number(4)?,
         counterparty_number: number(6)?,
         amount: amount.map(Cents::new).transpose()?,
         currency: Currency::parse(&r.get::<_, String>(10)?)?,
-        detail: r.get(9)?,
+        detail,
     })
 }
 

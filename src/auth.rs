@@ -819,8 +819,13 @@ pub fn logout_handler(atm: &mut Atm, session: HandlerSession) -> Result<()> {
     log_logout(atm, &session, &session.actor(), None)
 }
 
+/// End an Authorities session without recording administrative access in the ATM audit.
 pub fn logout_authorities(atm: &mut Atm, session: AuthoritiesSession) -> Result<()> {
-    log_logout(atm, &session, &session.actor(), None)
+    session.end();
+    if session.bank != atm.id {
+        return Err(AtmError::SessionExpired);
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

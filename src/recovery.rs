@@ -241,18 +241,11 @@ fn configure_authorities_phone(conn: &Connection, phone: &str) -> Result<bool> {
         return Ok(false);
     }
     put_phone(conn, AUTHORITIES, &phone)?;
-    log(
-        conn,
-        "programmer",
-        Action::ControlsChanged,
-        None,
-        "bank authorities phone updated from programmer configuration",
-    )?;
     Ok(true)
 }
 
 /// Read the programmer's file without a teller/bank login or password check.
-/// Changes still commit through the existing database seal and audit log.
+/// Maintenance changes commit through the database seal without business audit entries.
 pub(crate) fn apply_authorities_configuration(conn: &Connection, bank_id: u64) -> Result<bool> {
     let path = configuration_path(conn, bank_id);
     let phone = match std::fs::read_to_string(&path) {
@@ -450,20 +443,10 @@ pub fn request_authorities_code(atm: &mut Atm, phone: &str) -> Result<String> {
     if let Some(phone) = valid {
         let mut record = load(&tx, AUTHORITIES)?;
         if can_send(&record) {
-            let (_, delivery) = start(&tx, bank_id, &mut record, &phone, "authorities-login")?;
+            // Challenge state and throttling persist, without writing a business audit event.
+            let _ = start(&tx, bank_id, &mut record, &phone, "authorities-login")?;
             save(&tx, AUTHORITIES, &record)?;
-            log(
-                &tx,
-                "anonymous",
-                if delivery.is_ok() { Action::ControlsChanged } else { Action::LoginFailed },
-                None,
-                "bank authorities code requested",
-            )?;
-        } else {
-            log(&tx, "anonymous", Action::LoginFailed, None, "bank authorities code request rate limited")?;
         }
-    } else {
-        log(&tx, "anonymous", Action::LoginFailed, None, "bank authorities code request rejected")?;
     }
     tx.commit()?;
     Ok("If registered to Bank Authorities, the code is in <phone-number>.authorities-login.txt beside the bank database. It expires in 5 minutes; wait 60 seconds before requesting another.".into())
@@ -482,13 +465,6 @@ pub fn login_authorities(atm: &mut Atm, phone: &str, code: &str) -> Result<Autho
         && staff_phone(&tx, AUTHORITIES)?.as_deref() == Some(&phone)
         && check(&mut record, &phone, code, "authorities-login")?;
     save(&tx, AUTHORITIES, &record)?;
-    log(
-        &tx,
-        "authorities:bank authorities",
-        if approved { Action::LoginOk } else { Action::LoginFailed },
-        None,
-        "bank authorities phone sign-in",
-    )?;
     tx.commit()?;
     if !approved {
         return Err(AtmError::AuthFailed);
@@ -686,6 +662,41 @@ mod tests {
         save(&tx, AUTHORITIES, &record).unwrap();
         tx.commit().unwrap();
         assert!(login_authorities(&mut atm, phone, &code).is_err());
+    }
+
+    #[test]
+    fn authorities_authentication_leaves_no_business_audit_entries_but_keeps_security_state() {
+        let (mut atm, _) = bank();
+        let phone = "+12125550199";
+        let before: (i64, String) = atm
+            .conn
+            .query_row("SELECT seq, mac FROM audit_log ORDER BY seq DESC LIMIT 1", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        request_authorities_code(&mut atm, "invalid").unwrap();
+        request_authorities_code(&mut atm, "+12125559999").unwrap();
+        request_authorities_code(&mut atm, phone).unwrap();
+        let path = code_path(&atm.conn, atm.id, phone).with_extension("authorities-login.txt");
+        let code = std::fs::read_to_string(&path).unwrap().trim().to_string();
+        request_authorities_code(&mut atm, phone).unwrap(); // throttled, no replacement
+        assert_eq!(std::fs::read_to_string(&path).unwrap().trim(), code);
+        assert!(login_authorities(&mut atm, phone, "invalid").is_err());
+        let record = load(&atm.read().unwrap(), AUTHORITIES).unwrap();
+        assert_eq!(record.attempts, 1);
+        assert_eq!(record.sends, 1);
+        let session = login_authorities(&mut atm, phone, &code).unwrap();
+        crate::revenue::balances(&atm, &session).unwrap();
+        logout_authorities(&mut atm, session).unwrap();
+        assert!(login_authorities(&mut atm, phone, &code).is_err());
+        let after: (i64, String) = atm
+            .conn
+            .query_row("SELECT seq, mac FROM audit_log ORDER BY seq DESC LIMIT 1", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(before, after, "Authorities authentication changed the ATM business audit");
+        audit::verify(&atm.read().unwrap()).unwrap();
     }
 
     #[test]
@@ -987,7 +998,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(logged, 2);
+        assert_eq!(logged, 0, "programmer location changes entered the business audit");
     }
 
     #[test]
@@ -1045,6 +1056,36 @@ mod tests {
         assert!(enroll(&mut atm, &admin, ADMIN.1, PHONE).is_err());
         assert!(!code_path(&atm.conn, atm.id, PHONE).exists());
         assert_eq!(load(&atm.read().unwrap(), ADMIN.0).unwrap().expires, 0);
+    }
+
+    #[test]
+    fn programmer_configuration_imports_preserve_the_business_audit() {
+        let (mut atm, _) = registered();
+        let before: (i64, String) = atm
+            .conn
+            .query_row("SELECT seq, mac FROM audit_log ORDER BY seq DESC LIMIT 1", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        let location =
+            code_path(&atm.conn, atm.id, PHONE).parent().unwrap().join(crate::identity::LOCATION_CONFIG_FILE);
+        std::fs::write(&location, "Maintenance test location\n").unwrap();
+        let config = configuration_path(&atm.conn, atm.id);
+        std::fs::write(&config, "+12125559999\n").unwrap();
+        refresh_authorities_configuration(&mut atm).unwrap();
+        crate::identity::initialize(&mut atm).unwrap();
+        let after: (i64, String) = atm
+            .conn
+            .query_row("SELECT seq, mac FROM audit_log ORDER BY seq DESC LIMIT 1", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(before, after, "maintenance changed the business audit head");
+        assert_eq!(staff_phone(&atm.read().unwrap(), AUTHORITIES).unwrap().as_deref(), Some("+12125559999"));
+        let bank_id = atm.id;
+        let view = atm.read().unwrap();
+        assert_eq!(crate::identity::origin(&view, bank_id).unwrap().location, "Maintenance test location");
+        audit::verify(&view).unwrap();
     }
 
     #[test]

@@ -1,6 +1,5 @@
 //! Per-installation ATM identity and a programmer-configured location for alerts.
 use crate::Atm;
-use crate::audit::{self, Action, Entry};
 use crate::error::{AtmError, Result};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -75,24 +74,6 @@ pub(crate) fn origin(conn: &Connection, bank_id: u64) -> Result<Origin> {
         if origin.location.as_deref() != Some(&location) {
             origin.location = Some(location);
             save(conn, &origin)?;
-            if crate::db::is_initialized(conn)? {
-                audit::append(
-                    conn,
-                    &Entry {
-                        actor: "programmer",
-                        action: Action::ControlsChanged,
-                        account_id: None,
-                        counterparty_id: None,
-                        amount: None,
-                        usd: None,
-                        detail: &format!(
-                            "ATM {} location configured: {}",
-                            origin.id,
-                            origin.location.as_deref().unwrap_or("")
-                        ),
-                    },
-                )?;
-            }
         }
     }
     Ok(Origin { id: origin.id, location: origin.location.unwrap_or_else(|| "Not configured".into()) })

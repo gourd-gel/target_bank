@@ -1044,7 +1044,6 @@ fn history_rows(rows: &[Row], my_account: &str) -> Vec<Vec<String>> {
             let (what, sign) = match r.action.as_str() {
                 "deposit" => (format!("Cash deposit ({})", r.detail), "+"),
                 "withdrawal" => (format!("Cash withdrawal ({})", r.detail), "−"),
-                "processing_fee" => ("Processing fee".into(), "−"),
                 "transfer" if mine => (
                     format!(
                         "Transfer to {}{by_guardian}",

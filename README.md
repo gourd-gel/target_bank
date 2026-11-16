@@ -175,7 +175,7 @@ The command validates the number and atomically writes the git-ignored
 `bank-authorities-phone.txt` beside the bank database (current folder by
 default). It can run before the bank exists. The app imports changes at
 startup or before the next alert, encrypts the number in the authorities'
-staff row, and records the change in the signed log. The authorities number
+staff row, and seals the updated state. The authorities number
 must differ from teller numbers. If the file is absent, the stored number
 remains in use. The programmer PIN protects the maintenance command; source
 and local configuration files remain under programmer control.
@@ -259,13 +259,15 @@ Every feature, with the matching rubric line, is in
 
 **Security in brief.** No default passwords. PINs and passwords are Argon2id
 hashes keyed with a secret from `atm.key`. Names, birth dates and card and
-account numbers are AES-256-GCM encrypted. Every action goes into an
-HMAC-chained audit log in the same transaction as the money. The whole
+account numbers are AES-256-GCM encrypted. GUI requests are traced in the user activity audit. The internal financial
+ledger is HMAC-chained and commits in the same transaction as the money. The whole
 database is sealed with an HMAC checked before every operation, and
 `atm.anchor` refuses an older copy. 3 wrong PINs lock a card; sessions end
 after 2 minutes idle. The front ends can't run SQL or skip a check: the
 compiler stops them. See [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) (STRIDE)
 and [docs/VULNERABILITIES.md](docs/VULNERABILITIES.md).
+
+**User activity audit.** Only activities initiated through the deployed GUI are traced in the user activity audit, including the security responses to those requests. The GUI is the only user access channel. Transaction entries show the amount requested by the user or teller, before processing, ATM or exchange fees. Processing charges are available through the bank revenue account; receipts and account balances show the actual financial result. The command-line version is a development/testing tool; the bank deploys the GUI to users.
 
 ## 5. Where things are
 

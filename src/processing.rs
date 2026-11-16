@@ -345,7 +345,7 @@ mod tests {
                 .iter()
                 .filter(|r| r.action == "processing_fee")
                 .count(),
-            4
+            0
         );
         atm.conn.execute("UPDATE processing.records SET ciphertext = x'00' WHERE reference = (SELECT MIN(reference) FROM processing.records)", []).unwrap();
         assert!(matches!(customer::balance(&atm, &session), Err(AtmError::DatabaseAltered)));

@@ -461,7 +461,7 @@ mod tests {
         ));
         set_frozen(&mut conn, &p, &kid.account_number, false).unwrap();
         assert!(customer::withdraw(&mut conn, &k, usd(200), twenties()).is_ok());
-        assert_eq!(youth_history(&conn, &p, &kid.account_number, 0).unwrap().len(), 2);
+        assert_eq!(youth_history(&conn, &p, &kid.account_number, 0).unwrap().len(), 1);
     }
 
     #[test]

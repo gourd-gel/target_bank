@@ -3,7 +3,7 @@
 This guide walks through every screen of the ATM, step by step, for each of
 the three booth roles. You don't need to know any code to follow it.
 
-**Access model:** system users have access only to the GUI. The programmable
+**Access model:** system users have access only to the GUI. Only GUI user activities are traced in the user activity audit; transaction amounts are the amounts users or tellers requested, before fees. The programmable
 interface, source code, Cargo commands, and maintenance tools are accessible
 only to the programmer. Command-line examples in this guide are programmer
 instructions; they are not part of the GUI users' workflow.
@@ -13,7 +13,7 @@ instructions; they are not part of the GUI users' workflow.
 - [3. Customers](#3-customers)
 - [4. Teller Admin](#4-teller-admin)
 - [5. Cash Handler](#5-cash-handler)
-- [6. Command-line version](#6-command-line-version)
+- [6. Command-line version](#6-command-line-developmenttesting-tool)
 - [7. Messages you may see](#7-messages-you-may-see)
 
 ---
@@ -82,7 +82,7 @@ authorities-number control.
 
 The command saves `bank-authorities-phone.txt` beside the database. Changes
 take effect at startup or before the next alert and are then saved encrypted
-in the database. Existing stored numbers remain in use if the file is absent.
+in the database. The updated state remains sealed. Existing stored numbers remain in use if the file is absent.
 
 To register a teller number, sign in and open **My password → Cell phone
 recovery**. Enter the teller phone and current password, then click
@@ -678,7 +678,7 @@ characters), and click **Change password**.
 
 ---
 
-## 6. Command-line version
+## 6. Command-line development/testing tool
 
 The same ATM, in a terminal: `cargo run --release` (practice data:
 `cargo run --release --features demo -- --demo`; for the integrity test see
@@ -773,14 +773,19 @@ person can't read or scroll back to the last one.
 
 ## Processing fees
 
-Withdrawals, deposits, transfers, and guardian transfers incur a **3% processing fee**, rounded up to a supported currency unit. Withdrawals and outgoing transfers debit principal plus the fee; deposits credit principal less the fee. Transfer recipients receive the full principal. Existing ATM/exchange fees still apply. Receipts and history show processing fees separately. Read [Processing fees](PROCESSING_FEES.md) for programmer provisioning and database backup requirements. Examples elsewhere in this guide show principal; actual balances also reflect processing fees.
+Withdrawals, deposits, transfers, and guardian transfers incur a **3% processing fee**, rounded up to a supported currency unit. Withdrawals and outgoing transfers debit principal plus the fee; deposits credit principal less the fee. Transfer recipients receive the full principal. Existing ATM/exchange fees still apply. Receipts show processing fees separately; activity history shows requested transaction amounts. Read [Processing fees](PROCESSING_FEES.md) for programmer provisioning and database backup requirements. Examples elsewhere in this guide show principal; actual balances also reflect processing fees.
 
 
 ## Bank Authorities: revenue account
 
-Bank Authorities is a backend-only role and does not use the booth. The GUI and booth CLI expose only Customer, Teller Admin and Cash Handler access. Authorities alerts, authenticated revenue views and reasoned credit/debit adjustments remain available through the core library APIs. Revenue continues to collect processing fees automatically. Follow [Bank Authorities sign-in](PROCESSING_FEES.md#bank-authorities-sign-in-code-level) for phone setup, OTP verification, revenue API access and sign-out.
+Bank Authorities is a backend-only role and does not use the booth. The GUI and booth CLI expose only Customer, Teller Admin and Cash Handler access. Authorities alerts, authenticated revenue views and reasoned credit/debit adjustments remain available through the core library APIs. Revenue continues to collect processing fees automatically. Revenue credits/debits remain recorded for reconciliation. Follow [Bank Authorities sign-in](PROCESSING_FEES.md#bank-authorities-sign-in-code-level) for phone setup, OTP verification, revenue API access and sign-out.
 
 
 ## ATM origin on teller OTP alerts
 
 Bank Authorities alerts now identify the originating ATM with its configured location, persistent ATM ID, UTC timestamp and HMAC-SHA256 authentication signature. These details accompany successful code requests and invalid, unknown or throttled requests. The programmer configures the branch/address/terminal with `cargo atm-location "Location" --directory /path/to/bank-folder`, using the programmer PIN. Until configured, the location reads **Not configured**. See [ATM origin alerts](ATM_ALERTS.md).
+
+
+## User activity audit amounts
+
+Only activities initiated through the deployed GUI are traced in the user activity audit, including the security responses to those requests. The GUI is the only user access channel. Transaction entries show the amount requested by the user or teller, before processing, ATM or exchange fees. Processing charges are available through the bank revenue account; receipts and account balances show the actual financial result. A $100 deposit is listed as a $100 deposit, even though the customer receives $97 after the 3% processing fee. A $100 transfer is listed as $100, even though its sender pays $103. Fee and revenue-adjustment records are not separate GUI activity rows.

@@ -299,6 +299,10 @@ mod tests {
         assert_eq!(rows[0].delta_cents, -200);
         assert_eq!(rows[0].actor, "authorities:bank authorities");
         assert!(rows[0].detail.contains("fee refund allocation"));
+        let activity = crate::audit::recent(&atm.conn, 1, 0).unwrap();
+        assert_eq!(activity.len(), 1);
+        assert_eq!(activity[0].action, "deposit");
+        assert_eq!(activity[0].amount, Some(Cents::from_dollars(100)));
         admin::verify_integrity(&mut atm, &admin).unwrap();
         assert!(atm.conn.execute("UPDATE revenue_ledger SET delta_cents = 0", []).is_err());
         assert!(atm.conn.execute("DELETE FROM revenue_ledger", []).is_err());
@@ -369,12 +373,9 @@ mod tests {
         );
         assert_eq!(history(&atm, &authority, 0).unwrap().len(), 2);
         let audit = crate::audit::recent(&atm.conn, 20, 0).unwrap();
-        let eur = audit
-            .iter()
-            .find(|r| r.action == "revenue_credit" && r.detail.contains("EUR correction"))
-            .unwrap();
-        assert_eq!(eur.currency, Currency::Eur);
-        assert_eq!(eur.amount, Some(Cents::from_dollars(20)));
+        assert!(audit.iter().all(|row| row.action != "revenue_credit" && row.action != "revenue_debit"));
+        let entries = history(&atm, &authority, 0).unwrap();
+        assert!(entries.iter().any(|entry| entry.currency == Currency::Eur && entry.delta_cents == 2000));
         reconcile(&atm.conn).unwrap();
     }
 

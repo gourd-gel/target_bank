@@ -19,7 +19,7 @@ cargo atm-location "Branch address, building, terminal 01" --directory /path/to/
 
 Enter the separate programmer PIN at the hidden prompt. The command requires `.programmer-pin.secret` in the source workspace, creates or replaces `atm-location.txt` in the bank folder atomically, and does not require a bank login or initialize a bank. The programmer secret stays with the programmer and is excluded from the bank delivery. Normal GUI builds exclude this maintenance binary.
 
-Location must be 1–240 characters on a single line. Empty labels and embedded control characters are rejected. Startup and every teller OTP alert import a valid location into sealed bank metadata. Changes after setup are audit logged. The initial location can be configured before first-run staff setup. Removing the configuration file preserves the last imported label.
+Location must be 1–240 characters on a single line. Empty labels and embedded control characters are rejected. Startup and every teller OTP alert import a valid location into sealed bank metadata. The imported state remains sealed. The initial location can be configured before first-run staff setup. Removing the configuration file preserves the last imported label.
 
 Until configured, alerts explicitly report **Not configured**. The application does not invent an address or use GPS/geolocation. An invalid or unreadable location configuration blocks startup or prevents delivery of a newly requested teller code rather than issuing a misleading alert.
 

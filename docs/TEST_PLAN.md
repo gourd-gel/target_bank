@@ -31,7 +31,7 @@ cover. Every step uses the demo bank, so nothing here needs real data.
     Wrong PIN, empty input, and missing or corrupt `.programmer-pin.secret`
     must exit unsuccessfully and leave the previous configuration unchanged.
     Invalid phone input must also leave the configuration unchanged. Confirm the GUI has no authorities
-    configuration control.
+    configuration control. Configuration imports must keep the new state sealed.
 11. Reopen a sealed version 6 bank: existing phones move into staff records,
     credentials stay valid, and the migrated bank reopens with its new seal.
 
@@ -382,6 +382,11 @@ Verify the booth GUI and CLI have no Bank Authorities sign-in, dashboard or reve
 
 ## ATM alert origin verification
 
-Verify enrollment, valid recovery, invalid-phone, unknown-phone and throttled alerts include location, a persistent ATM ID, UTC time and the full-body authentication signature. Changing the body must invalidate its signature. Restart the same installation and confirm the ID remains stable; independently create another bank using the same runtime key and confirm its ID differs. Change location and confirm the next alert updates location without changing the ID and logs the change.
+Verify enrollment, valid recovery, invalid-phone, unknown-phone and throttled alerts include location, a persistent ATM ID, UTC time and the full-body authentication signature. Changing the body must invalidate its signature. Restart the same installation and confirm the ID remains stable; independently create another bank using the same runtime key and confirm its ID differs. Change location and confirm the next alert updates location while preserving the ID.
 
 The location tool requires the separate programmer PIN and no bank/staff session. Wrong PIN, absent/corrupt secrets, blank labels and embedded control characters must leave configuration unchanged. A preconfigured location must not prevent first-run setup. Missing configuration reports **Not configured** until a label is imported; invalid runtime configuration must not deliver a fresh teller OTP. Normal GUI builds exclude the maintenance command.
+
+
+## GUI user activity audit
+
+The deployed GUI is the sole user access channel. Verify its activity audit contains user-requested actions and resulting security events. Transaction rows must show requested principal, never fee-adjusted debits/credits. Hide processing-fee and administrative revenue-adjustment rows. Verify filtering occurs before pagination, account activity and customer history remain consistent, and fee details do not appear in cash transaction audit rows. Test a $100 deposit ($97 net), a $100 transfer ($103 debit), and a foreign guest withdrawal with ATM/exchange/processing fees; the cash request stays in USD in the activity audit. Confirm receipts, balances, revenue credits, signed financial reconciliation and encrypted fee records retain the actual accounting results.

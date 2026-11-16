@@ -1,3 +1,8 @@
+## GUI user activity audit
+
+- Document the deployed GUI as the sole user access channel and trace GUI user activities in the activity audit.
+- Show requested transaction amounts, including cash requests in USD, without processing-fee or administrative revenue-adjustment rows. Keep actual financial entries, revenue balances, receipts and reconciliation intact.
+
 ## Bank Authorities remains outside the booth
 
 - Remove the Authorities entrance, sign-in routing, session state, revenue callbacks and dashboard from the GUI, and remove Authorities access from the booth CLI.
@@ -7,7 +12,7 @@
 ## ATM origin in Authorities alerts
 
 - Include configured ATM location, persistent installation ID, UTC time and a complete-body HMAC-SHA256 tag on every teller OTP request alert, including rejected/throttled requests.
-- Add programmer-PIN-protected `cargo atm-location` configuration, sealed identity metadata and audited location updates. Keep ATM IDs stable across restarts and independent across new installations.
+- Add programmer-PIN-protected `cargo atm-location` configuration, sealed identity metadata and location updates. Keep ATM IDs stable across restarts and independent across new installations.
 - Preserve first-run setup, existing alert text/code copies, local file delivery and programmer key custody. See `docs/ATM_ALERTS.md`.
 
 ## Bank revenue account
@@ -19,7 +24,7 @@
 ## Processing fees
 
 - Apply a fixed 3% processing fee to withdrawals, deposits, transfers, and guardian transfers; fees round up to the supported account currency unit.
-- Show processing fees in quotes, receipts, history, and separate bank audit entries; reconcile balances while keeping principal-based limits and physical cash unchanged.
+- Show processing fees in quotes and receipts, and retain separate internal financial entries; reconcile balances while keeping principal-based limits and physical cash unchanged.
 - Write encrypted records to a separate database in the same SQLite transaction. The bank receives only a public encryption key; the programmer keeps the private key and offline reading tool.
 - See `docs/PROCESSING_FEES.md` for provisioning and coordinated backups.
 
@@ -45,8 +50,8 @@
   empty PIN input and missing/corrupt secret files prevent the change. The
   hashed provisioning example is provided for fresh checkouts. `--directory`
   selects the bank folder. The command writes the local configuration file;
-  the app imports it at startup or before its next alert and records the
-  change in the signed log. `programmer-tools` enables the separate
+  the app imports it at startup or before its next alert and seals the
+  updated state. `programmer-tools` enables the separate
   `bank-authorities` binary; normal GUI builds exclude it. No authorities
   configuration control is exposed to GUI users.
 - Documented key custody: the programmer retains `.programmer-pin.secret`;

@@ -1284,10 +1284,79 @@ mod tests {
         let (mut conn, _, _, ann, bo) = world();
         withdraw(&mut conn, &ann, usd(40), BillChoice::Only(d(20))).unwrap();
         transfer(&mut conn, &ann, bo.account_number(), usd(10)).unwrap();
-        assert_eq!(history(&conn, &ann, 0).unwrap().len(), 4);
+        assert_eq!(history(&conn, &ann, 0).unwrap().len(), 2);
         let bo_rows = history(&conn, &bo, 0).unwrap();
         assert_eq!(bo_rows.len(), 1, "Bo sees the incoming transfer, not Ann's withdrawal");
         assert_eq!(bo_rows[0].action, "transfer");
+    }
+
+    #[test]
+    fn activity_audit_reports_requested_amounts_while_revenue_and_balances_include_fees() {
+        let (mut conn, admin, _, ann, bo) = world();
+        deposit(&mut conn, &ann, &[(d(100), 1)]).unwrap();
+        withdraw(&mut conn, &ann, usd(20), BillChoice::Only(d(20))).unwrap();
+        transfer(&mut conn, &ann, bo.account_number(), usd(10)).unwrap();
+        let rows = admin::audit_for_account(&conn, &admin, ann.account_number(), 0).unwrap();
+        for (action, requested) in [("deposit", 100), ("withdrawal", 20), ("transfer", 10)] {
+            let row = rows.iter().find(|row| row.action == action).unwrap();
+            assert_eq!(row.amount, Some(usd(requested)));
+            assert_eq!(row.currency, Currency::Usd);
+            assert!(!row.detail.to_lowercase().contains("fee"));
+        }
+        assert!(rows.iter().all(|row| row.action != "processing_fee"));
+        assert_eq!(balance(&conn, &ann).unwrap(), Cents::parse("1066.10").unwrap());
+        assert_eq!(
+            conn.query_row("SELECT balance_cents FROM bank_revenue WHERE currency = 'USD'", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            390
+        );
+        assert_eq!(history(&conn, &ann, 0).unwrap().len(), 3);
+        admin::verify_integrity(&mut conn, &admin).unwrap();
+    }
+
+    #[test]
+    fn foreign_cash_audit_shows_requested_usd_without_exchange_or_atm_fee_adjustment() {
+        let (mut conn, admin, _, _, _) = world();
+        fx::set_rate(&mut conn, &admin, Currency::Krw, "1385.50").unwrap();
+        let card = admin::register_guest_card(
+            &mut conn,
+            &admin,
+            "Jin Han",
+            "1990-07-07",
+            "8024",
+            Cents::from_dollars(100_000),
+            Currency::Krw,
+        )
+        .unwrap();
+        let jin = auth::login_customer(&mut conn, &card.card_number, "8024").unwrap();
+        let receipt = withdraw(&mut conn, &jin, usd(20), BillChoice::Any).unwrap();
+        assert_eq!(receipt.amount, Cents::from_dollars(36_856));
+        let rows = admin::audit_for_account(&conn, &admin, &card.account_number, 0).unwrap();
+        let row = rows.iter().find(|row| row.action == "withdrawal").unwrap();
+        assert_eq!(row.amount, Some(usd(20)));
+        assert_eq!(row.currency, Currency::Usd);
+        assert!(!row.detail.to_lowercase().contains("fee"));
+        let raw: i64 = conn
+            .query_row("SELECT amount_cents FROM audit_log WHERE seq = ?1", [receipt.reference], |r| r.get(0))
+            .unwrap();
+        assert_eq!(raw, 3_602_400, "signed financial ledger lost the exchange/ATM charges");
+        admin::verify_integrity(&mut conn, &admin).unwrap();
+    }
+
+    #[test]
+    fn activity_history_pages_count_transactions_without_internal_fee_rows() {
+        let (mut conn, _, _, ann, _) = world();
+        for _ in 0..12 {
+            deposit(&mut conn, &ann, &[(d(5), 1)]).unwrap();
+        }
+        let first = history(&conn, &ann, 0).unwrap();
+        let second = history(&conn, &ann, 1).unwrap();
+        assert_eq!(first.len(), 10);
+        assert_eq!(second.len(), 2);
+        assert!(history(&conn, &ann, 2).unwrap().is_empty());
+        assert!(first.iter().chain(second.iter()).all(|r| r.action == "deposit" && r.amount == Some(usd(5))));
+        assert!(first.last().unwrap().seq > second.first().unwrap().seq);
     }
 
     #[test]

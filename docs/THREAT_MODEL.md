@@ -1,8 +1,12 @@
 # Threat model: Bank of CCNY ATM
 
+## User activity audit
+
+Only activities initiated through the deployed GUI are traced in the user activity audit, including the security responses to those requests. The GUI is the only user access channel. Transaction entries show the amount requested by the user or teller, before processing, ATM or exchange fees. Processing charges are available through the bank revenue account; receipts and account balances show the actual financial result. The internal signed financial ledger retains full bookkeeping entries for reconciliation and is distinct from the GUI activity audit.
+
 ## ATM origin on Authorities alerts
 
-Teller OTP alerts bind the configured physical location, a persistent random ATM ID, the UTC time, requested phone and verification text/rejection reason into a complete-body HMAC-SHA256 tag. Its key is derived from the runtime master key using a dedicated alert purpose label. This does not reuse the existing key fingerprint as a signature. The ID and imported location are sealed metadata; later location imports are audit logged. IDs survive restarts and are independent across newly created bank databases, including databases sharing a runtime key.
+Teller OTP alerts bind the configured physical location, a persistent random ATM ID, the UTC time, requested phone and verification text/rejection reason into a complete-body HMAC-SHA256 tag. Its key is derived from the runtime master key using a dedicated alert purpose label. This does not reuse the existing key fingerprint as a signature. The ID and imported location are sealed metadata. IDs survive restarts and are independent across newly created bank databases, including databases sharing a runtime key.
 
 The programmer configures the location with the PIN-protected `cargo atm-location` command; no teller or customer API changes it. The configuration file follows the existing trusted-filesystem maintenance model. Empty/oversized labels and control characters are rejected to prevent injected alert fields. An unconfigured installation reports its location as **Not configured**. Location is declared configuration, not geolocation or hardware attestation. Anyone with `atm.key` can authenticate messages; cloning the complete database preserves the ID. See [ATM origin alerts](ATM_ALERTS.md) for setup and signature scope.
 
@@ -16,9 +20,9 @@ Authorities edit revenue through recorded credits/debits with a reason, rather t
 
 ## Processing fee extension
 
-Every successful withdrawal, deposit, transfer and guardian transfer pays a fixed 3% processing fee, rounded up to a supported account currency unit. A separate signed bank audit entry records the debit and original transaction reference; reconciliation includes it without changing physical cash accounting. Previews are free, and failures roll back all money and fee changes.
+Every successful withdrawal, deposit, transfer and guardian transfer pays a fixed 3% processing fee, rounded up to a supported account currency unit. A separate internal signed financial entry records the debit and original transaction reference; reconciliation includes it without changing physical cash accounting. Previews are free, and failures roll back all money and fee changes.
 
-The separate `atm.processing-fees.db` stores RSA-OAEP-SHA256 encrypted records. Only the public key is installed on the ATM; the programmer keeps the private key off the bank machine. Bank staff can see charges in the bank audit and access ciphertext as application owners, but cannot decrypt the separate payloads with `atm.key`. The private key, rather than a bank staff role, authorizes offline decryption. Compromise of that private key exposes the encrypted records. The ledger does not conceal the fee amounts already disclosed to customers and the bank.
+The separate `atm.processing-fees.db` stores RSA-OAEP-SHA256 encrypted records. Only the public key is installed on the ATM; the programmer keeps the private key off the bank machine. Bank staff can inspect charges through the bank revenue account and access ciphertext as application owners, but cannot decrypt the separate payloads with `atm.key`. The private key, rather than a bank staff role, authorizes offline decryption. Compromise of that private key exposes the encrypted records. Receipts disclose fee amounts and actual financial results.
 
 The sealed main database pins a hash covering the private ledger schema, installed public key, and encrypted rows. Fee record references must match bank processing-fee entries. Both databases use one attached SQLite transaction with DELETE rollback journals and FULL synchronization; backups must capture both databases and the main anchor consistently. See [Processing fees](PROCESSING_FEES.md) for provisioning and custody. SQLite documents the multi-file atomicity conditions in [ATTACH DATABASE](https://www.sqlite.org/lang_attach.html).
 
@@ -67,7 +71,7 @@ closed without changing the number. No staff session, staff password, or
 phone verification is needed. The command writes `bank-authorities-phone.txt`
 beside the database. It trusts filesystem access
 under the bank's OS account. The app reads it at startup and before alerts;
-changes are encrypted in the authorities' staff record and audit logged.
+changes are encrypted in the authorities' staff record and sealed.
 Teller number changes continue to require their existing authentication.
 Code delivery fails closed if the authorities number is
 missing or its alert cannot be written. A user-supplied recovery number must
@@ -378,7 +382,7 @@ give each threat, its defense, the code and the test.
 
 | Threat | Defense | Code | Test |
 |---|---|---|---|
-| "I never made that withdrawal" | Every transaction is logged with the **card** (row id and last 4 digits, so joint holders are told apart), time, amount, bills, rate and each fee, in the same transaction as the money movement; the customer gets a receipt with the log reference number | `audit.rs` → `append`; `customer.rs` → `receipt` | `withdraw_moves_money_and_bills_and_gives_a_receipt`, `logs_name_cards_by_id_and_last_four_only` |
+| "I never made that withdrawal" | Every transaction is logged with the **card** (row id and last 4 digits, so joint holders are told apart), time, requested amount, bills and rate in the GUI activity audit; the signed financial ledger separately retains actual charges in the same transaction as the money movement; the customer gets a receipt with the log reference number | `audit.rs` → `append`; `customer.rs` → `receipt` | `withdraw_moves_money_and_bills_and_gives_a_receipt`, `logs_name_cards_by_id_and_last_four_only` |
 | Staff deny an action | Logins, failures, lockouts, unlocks, limit changes (old → new), approvals of a larger amount for today, hold releases, rate changes (typed or from the feed), pauses, fee changes (old → new), freezes, closures, cash moves, password changes, logouts, integrity checks, and halts and resumes of service are all logged with the staff username | `admin.rs`, `cash.rs`, `auth.rs` → `log`; `fx.rs` → `set_rate`, `set_fee_rule`; `admin.rs` → `raise_limit_today`; `review.rs` → `release_hold`; `service.rs` → `halt`, `resume` | `limit_changes_are_validated_and_logged`, `logout_is_logged_and_ends_the_session`, `a_teller_can_approve_more_than_the_daily_limit_for_today_only` |
 | A teller resumes service and later denies it, or says the check had passed | Resume runs the check again and logs its result with the teller's name ("resumed after review; integrity check passed", or "...; integrity check still fails: ..."). An automatic halt is logged as "system" with every check that failed (accounts by their last 4 digits) and whose sign-in found it. The state is read from those log entries, so there is no flag to flip quietly | `service.rs` → `check_at_sign_in`, `halt`, `resume`, `halted` | `a_failed_check_at_sign_in_takes_the_atm_out_of_service`, `a_teller_can_halt_and_resume_by_hand`, `a_known_failure_does_not_hide_a_new_one_and_no_full_number_is_logged` |
 | A holder denies agreeing to a new joint holder or guardian | The log line names the new card and the card that confirmed it ("joint holder, card 9 ending 1234; confirmed by card 7 ending 5678 with PIN"), with the teller's name | `admin.rs` → `add_joint_holder`, `add_guardian`, `open_youth_account` | `joint_and_youth_changes_need_the_holders_card_and_pin` |
