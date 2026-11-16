@@ -1,7 +1,8 @@
 # Bank of CCNY ATM
 
-A secure ATM simulation written in Rust for three kinds of users:
-**Customers**, **Teller Admins** and **Cash Handlers**. It has a desktop GUI
+A secure ATM simulation written in Rust for three booth roles:
+**Customers**, **Teller Admins**, and **Cash Handlers**. **Bank Authorities** is
+a backend-only role for alerts and revenue management. The booth has a desktop GUI
 (Slint) and a command-line version. Both are thin front ends over one library
 (`src/`) that enforces every rule. All data is stored in SQLite.
 
@@ -150,6 +151,19 @@ The programmer uses this key only when the bank requests programmer
 intervention. Bank staff receive the GUI and do not use maintenance keys
 or Cargo commands. The ATM's `atm.key` remains a required runtime file for
 the GUI.
+
+Bank Authorities teller OTP alerts include the ATM location, persistent ID, UTC time,
+and an authenticated signature. Configure the location with `cargo atm-location`.
+See [ATM origin alerts](docs/ATM_ALERTS.md) for setup and signature details.
+
+Customer money transactions incur a **3% processing fee**. Fees accumulate in the
+bank revenue account, managed through authenticated **Bank Authorities** backend
+APIs with audited credit/debit adjustments. Authorities has no booth GUI or CLI
+sign-in, menu, or dashboard. Follow the
+[Bank Authorities sign-in instructions](docs/PROCESSING_FEES.md#bank-authorities-sign-in-code-level)
+for code-level authentication. See
+[Processing fees](docs/PROCESSING_FEES.md) for charging rules, programmer-only
+key provisioning, the separate encrypted fee database, and coordinated backups.
 
 No teller or bank account login is required. The `bank-authorities` binary
 is excluded from normal GUI builds and enabled by `programmer-tools`.

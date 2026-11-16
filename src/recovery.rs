@@ -203,6 +203,13 @@ pub fn write_authorities_configuration(
     secret_file: &std::path::Path,
     pin: &str,
 ) -> Result<()> {
+    verify_programmer_pin(secret_file, pin)?;
+    let phone = phone_number(phone)?;
+    deliver(&directory.join(AUTHORITIES_CONFIG_FILE), &phone)
+}
+
+#[cfg(feature = "programmer-tools")]
+pub(crate) fn verify_programmer_pin(secret_file: &std::path::Path, pin: &str) -> Result<()> {
     input::validate_pin(pin).map_err(|_| AtmError::NotAllowed("incorrect programmer PIN"))?;
     let stored = Zeroizing::new(std::fs::read_to_string(secret_file).map_err(|_| {
         AtmError::NotAllowed("programmer PIN secret file is missing or unreadable; provision .programmer-pin.secret in the source workspace")
@@ -218,8 +225,7 @@ pub fn write_authorities_configuration(
     Argon2::default()
         .verify_password(pin.as_bytes(), &hash)
         .map_err(|_| AtmError::NotAllowed("incorrect programmer PIN"))?;
-    let phone = phone_number(phone)?;
-    deliver(&directory.join(AUTHORITIES_CONFIG_FILE), &phone)
+    Ok(())
 }
 
 fn configuration_path(conn: &Connection, bank_id: u64) -> std::path::PathBuf {
@@ -284,7 +290,15 @@ fn notify_authorities(conn: &Connection, bank_id: u64, requested_phone: &str, te
         )
         .map_err(|_| AtmError::NotAllowed("could not create the bank authorities notification folder"))?;
     }
-    deliver(&path, &format!("{ALERT_HEADER}{text}\nRequested phone: {requested_phone}"))
+    let origin = crate::identity::origin(conn, bank_id)?;
+    let body = format!(
+        "{ALERT_HEADER}{text}\nRequested phone: {requested_phone}\nATM ID: {}\nATM location: {}\nAlert time (UTC): {}",
+        origin.id,
+        origin.location,
+        audit::now_utc()
+    );
+    let signature = keys::alert_signature(&body)?;
+    deliver(&path, &format!("{body}\nATM signature (HMAC-SHA256): {signature}"))
 }
 
 /// Begin enrollment while signed in. Current password is required, and the
@@ -426,6 +440,62 @@ fn can_send(record: &Record) -> bool {
     now >= record.next_send && (now >= record.window + 900 || record.sends < 3)
 }
 
+/// Authorities use their separately configured phone, never a teller's phone or code.
+pub fn request_authorities_code(atm: &mut Atm, phone: &str) -> Result<String> {
+    let bank_id = atm.id;
+    let tx = atm.begin()?;
+    apply_authorities_configuration(&tx, bank_id)?;
+    let expected = staff_phone(&tx, AUTHORITIES)?;
+    let valid = phone_number(phone).ok().filter(|phone| expected.as_deref() == Some(phone));
+    if let Some(phone) = valid {
+        let mut record = load(&tx, AUTHORITIES)?;
+        if can_send(&record) {
+            let (_, delivery) = start(&tx, bank_id, &mut record, &phone, "authorities-login")?;
+            save(&tx, AUTHORITIES, &record)?;
+            log(
+                &tx,
+                "anonymous",
+                if delivery.is_ok() { Action::ControlsChanged } else { Action::LoginFailed },
+                None,
+                "bank authorities code requested",
+            )?;
+        } else {
+            log(&tx, "anonymous", Action::LoginFailed, None, "bank authorities code request rate limited")?;
+        }
+    } else {
+        log(&tx, "anonymous", Action::LoginFailed, None, "bank authorities code request rejected")?;
+    }
+    tx.commit()?;
+    Ok("If registered to Bank Authorities, the code is in <phone-number>.authorities-login.txt beside the bank database. It expires in 5 minutes; wait 60 seconds before requesting another.".into())
+}
+
+pub fn login_authorities(atm: &mut Atm, phone: &str, code: &str) -> Result<AuthoritiesSession> {
+    let phone = phone_number(phone).map_err(|_| AtmError::AuthFailed)?;
+    let tx = atm.begin()?;
+    let is_authorities: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM staff WHERE username = ?1 AND role = 'authorities')",
+        [AUTHORITIES],
+        |r| r.get(0),
+    )?;
+    let mut record = load(&tx, AUTHORITIES)?;
+    let approved = is_authorities
+        && staff_phone(&tx, AUTHORITIES)?.as_deref() == Some(&phone)
+        && check(&mut record, &phone, code, "authorities-login")?;
+    save(&tx, AUTHORITIES, &record)?;
+    log(
+        &tx,
+        "authorities:bank authorities",
+        if approved { Action::LoginOk } else { Action::LoginFailed },
+        None,
+        "bank authorities phone sign-in",
+    )?;
+    tx.commit()?;
+    if !approved {
+        return Err(AtmError::AuthFailed);
+    }
+    Ok(AuthoritiesSession { bank: atm.id, username: AUTHORITIES.into(), clock: IdleClock::new() })
+}
+
 /// Codes are written beside the database. In-memory test banks use separate
 /// temporary folders so parallel banks never overwrite each other's code.
 fn code_path(conn: &Connection, bank_id: u64, phone: &str) -> std::path::PathBuf {
@@ -440,7 +510,7 @@ fn code_path(conn: &Connection, bank_id: u64, phone: &str) -> std::path::PathBuf
 
 // Replace atomically, without following a pre-existing destination symlink.
 // Restrict access to the current user on Unix. The file contains only the code.
-fn deliver(path: &std::path::Path, code: &str) -> Result<()> {
+pub(crate) fn deliver(path: &std::path::Path, code: &str) -> Result<()> {
     use std::io::Write;
     let failure =
         || AtmError::NotAllowed("could not write the authentication code file beside the bank database");
@@ -500,14 +570,22 @@ fn start(
     getrandom::fill(&mut bytes).map_err(|_| AtmError::Internal("no system randomness".into()))?;
     let code = Zeroizing::new(format!("{:06}", u32::from_le_bytes(bytes) % 1_000_000));
     record.hash = keys::record_mac(&["phone-code", phone, purpose, &code])?;
-    let path = code_path(conn, bank_id, phone);
+    let path = if purpose == "authorities-login" {
+        code_path(conn, bank_id, phone).with_extension("authorities-login.txt")
+    } else {
+        code_path(conn, bank_id, phone)
+    };
     // Only the private per-bank folder for in-memory tests needs creating.
     if conn.path().is_none_or(|path| path.is_empty()) {
         std::fs::create_dir_all(path.parent().ok_or_else(|| AtmError::Internal("code file path".into()))?)
             .map_err(|_| AtmError::NotAllowed("could not create the authentication code folder"))?;
     }
     let text = format!("{}\n", &*code);
-    let delivery = notify_authorities(conn, bank_id, phone, &text).and_then(|_| deliver(&path, &code));
+    let delivery = if purpose == "authorities-login" {
+        deliver(&path, &code)
+    } else {
+        notify_authorities(conn, bank_id, phone, &text).and_then(|_| deliver(&path, &code))
+    };
     if delivery.is_err() {
         record.expires = 0;
     }
@@ -561,6 +639,53 @@ mod tests {
         save(&tx, ADMIN.0, &record).unwrap();
         tx.commit().unwrap();
         (atm, admin)
+    }
+
+    #[test]
+    fn authorities_phone_login_is_single_use_and_never_grants_teller_access() {
+        let (mut atm, _) = registered();
+        let phone = "+12125550199";
+        request_authorities_code(&mut atm, phone).unwrap();
+        let file = code_path(&atm.conn, atm.id, phone).with_extension("authorities-login.txt");
+        let authority_code = std::fs::read_to_string(&file).unwrap().trim().to_string();
+        assert!(!request_authorities_code(&mut atm, phone).unwrap().contains(&authority_code));
+        assert_eq!(std::fs::read_to_string(&file).unwrap().trim(), authority_code);
+        assert!(login(&mut atm, phone, &authority_code).is_err());
+        // A teller alert must not replace the authorities' outstanding sign-in code.
+        request_code(&mut atm, PHONE).unwrap();
+        assert_eq!(std::fs::read_to_string(&file).unwrap().trim(), authority_code);
+        let teller_code = code(&atm);
+        assert!(login_authorities(&mut atm, PHONE, &teller_code).is_err());
+        let session = login_authorities(&mut atm, phone, &authority_code).unwrap();
+        assert_eq!(crate::revenue::balances(&atm, &session).unwrap()[0].balance, crate::money::Cents::ZERO);
+        assert!(login_authorities(&mut atm, phone, &authority_code).is_err());
+        logout_authorities(&mut atm, session).unwrap();
+    }
+
+    #[test]
+    fn authorities_codes_expire_and_stop_after_five_wrong_attempts() {
+        let (mut atm, _) = bank();
+        let phone = "+12125550199";
+        request_authorities_code(&mut atm, phone).unwrap();
+        let path = code_path(&atm.conn, atm.id, phone).with_extension("authorities-login.txt");
+        let code = std::fs::read_to_string(&path).unwrap().trim().to_string();
+        for _ in 0..5 {
+            assert!(login_authorities(&mut atm, phone, "invalid").is_err());
+        }
+        assert!(login_authorities(&mut atm, phone, &code).is_err());
+        let tx = atm.begin().unwrap();
+        let mut record = load(&tx, AUTHORITIES).unwrap();
+        record.next_send = 0;
+        save(&tx, AUTHORITIES, &record).unwrap();
+        tx.commit().unwrap();
+        request_authorities_code(&mut atm, phone).unwrap();
+        let code = std::fs::read_to_string(&path).unwrap().trim().to_string();
+        let tx = atm.begin().unwrap();
+        let mut record = load(&tx, AUTHORITIES).unwrap();
+        record.expires = Utc::now().timestamp() - 1;
+        save(&tx, AUTHORITIES, &record).unwrap();
+        tx.commit().unwrap();
+        assert!(login_authorities(&mut atm, phone, &code).is_err());
     }
 
     #[test]
@@ -800,6 +925,9 @@ mod tests {
         let alert = std::fs::read_to_string(&file).unwrap();
         assert!(alert.starts_with(&format!("{ALERT_HEADER}{delivered}")));
         assert!(alert.contains(&format!("Requested phone: {PHONE}")));
+        assert!(alert.contains("ATM ID: "));
+        assert!(alert.contains("ATM location: Not configured"));
+        assert_alert_signature(&alert);
         let code = code(&atm);
         confirm_enrollment(&mut atm, &admin, &code).unwrap();
         let tx = atm.begin().unwrap();
@@ -810,6 +938,71 @@ mod tests {
         request_code(&mut atm, PHONE).unwrap();
         let delivered = std::fs::read_to_string(code_path(&atm.conn, atm.id, PHONE)).unwrap();
         assert!(std::fs::read_to_string(file).unwrap().starts_with(&format!("{ALERT_HEADER}{delivered}")));
+    }
+
+    fn assert_alert_signature(alert: &str) {
+        let (body, signature) = alert.rsplit_once("\nATM signature (HMAC-SHA256): ").unwrap();
+        assert!(keys::same_mac(signature.trim(), &keys::alert_signature(body).unwrap()));
+        assert!(!keys::same_mac(
+            signature.trim(),
+            &keys::alert_signature(&body.replace("Requested phone:", "Changed phone:")).unwrap()
+        ));
+        let timestamp = body.lines().find_map(|line| line.strip_prefix("Alert time (UTC): ")).unwrap();
+        chrono::DateTime::parse_from_rfc3339(timestamp).unwrap();
+    }
+
+    #[test]
+    fn every_teller_otp_request_alert_has_location_stable_id_and_authentication_signature() {
+        let (mut atm, _) = registered();
+        let folder = code_path(&atm.conn, atm.id, PHONE).parent().unwrap().to_path_buf();
+        std::fs::write(folder.join(crate::identity::LOCATION_CONFIG_FILE), "CCNY — Test branch, ATM 04\n")
+            .unwrap();
+        let mut id = None;
+        for phone in [PHONE, "+12125559999", "invalid", PHONE] {
+            request_code(&mut atm, phone).unwrap();
+            let alert = std::fs::read_to_string(folder.join("+12125550199.txt")).unwrap();
+            assert!(alert.contains("ATM location: CCNY — Test branch, ATM 04"));
+            let current = alert.lines().find_map(|l| l.strip_prefix("ATM ID: ")).unwrap().to_string();
+            assert_eq!(current.len(), 32);
+            if let Some(id) = &id {
+                assert_eq!(id, &current);
+            } else {
+                id = Some(current);
+            }
+            assert_alert_signature(&alert);
+        }
+        // A location update is applied before the next alert, without rotating ATM ID.
+        std::fs::write(folder.join(crate::identity::LOCATION_CONFIG_FILE), "CCNY — Test branch, ATM 05\n")
+            .unwrap();
+        request_code(&mut atm, PHONE).unwrap();
+        let alert = std::fs::read_to_string(folder.join("+12125550199.txt")).unwrap();
+        assert!(alert.contains("ATM location: CCNY — Test branch, ATM 05"));
+        assert!(alert.contains(&format!("ATM ID: {}", id.unwrap())));
+        assert_alert_signature(&alert);
+        let logged: i64 = atm
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM audit_log WHERE detail LIKE 'ATM % location configured: %'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(logged, 2);
+    }
+
+    #[test]
+    fn malformed_location_cannot_inject_alert_fields_or_issue_a_teller_code() {
+        let (mut atm, _) = registered();
+        let file = code_path(&atm.conn, atm.id, PHONE);
+        std::fs::remove_file(&file).unwrap();
+        std::fs::write(
+            file.parent().unwrap().join(crate::identity::LOCATION_CONFIG_FILE),
+            "Branch\nATM ID: forged",
+        )
+        .unwrap();
+        request_code(&mut atm, PHONE).unwrap();
+        assert!(!file.exists());
+        assert_eq!(load(&atm.read().unwrap(), ADMIN.0).unwrap().expires, 0);
     }
 
     #[test]

@@ -229,6 +229,13 @@ pub(crate) fn fingerprint() -> Result<String> {
     Ok(mac.finalize().into_bytes().iter().map(|b| format!("{b:02x}")).collect())
 }
 
+/// Authenticate the entire alert body using a purpose-specific key, never a key fingerprint.
+pub(crate) fn alert_signature(body: &str) -> Result<String> {
+    let key = Zeroizing::new(derive(&get()?.master, "bank-of-ccny/atm-alert/v1")?);
+    let mac = keyed(&key[..], &[b"atm-alert/v1", body.as_bytes()])?;
+    Ok(hex(&mac.finalize().into_bytes()))
+}
+
 /// Associated data: binds a ciphertext to its column and row, so an attacker
 /// can't swap one customer's encrypted name or DOB into another row.
 fn aad(column: &str, row: &str) -> Vec<u8> {

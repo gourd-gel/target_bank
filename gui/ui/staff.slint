@@ -736,7 +736,7 @@ export component TellerScreen inherits Rectangle {
                 width: parent.visible-width;
                 PasswordPanel { }
                 Panel {
-                    Title { text: "Cell phone recovery"; hint: "Codes are written to <phone-number>.txt. The programmer sets the authorities number in bank-authorities-phone.txt beside the database."; }
+                    Title { text: "Cell phone recovery"; hint: "Codes are written to your phone-number .txt file."; }
                     HorizontalLayout {
                         recovery-phone := Field { label: "Cell phone with country code"; placeholder: "+12125551234"; }
                         recovery-password := Field { label: "Current password"; password: true; }

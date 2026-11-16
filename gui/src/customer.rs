@@ -247,10 +247,15 @@ impl App {
                 match amount {
                     Some(amount) if !amount.is_zero() => {
                         *slot = Some(amount);
-                        let lines = vec![
-                            format!("Amount: {}", st.currency.format(amount)),
+                        let mut lines = vec![
+                            format!("Transfer amount to confirm: {}", st.currency.format(amount)),
                             format!("To account: {} ({hint})", mask(to)),
                         ];
+                        match atm::processing::transfer_summary(st.currency, amount) {
+                            Ok(summary) => lines
+                                .extend(summary.iter().skip(1).map(|r| format!("{}: {}", r.label, r.amount))),
+                            Err(e) => return self.fail(st, e),
+                        }
                         self.ask_confirm("Send this transfer?", lines, "");
                     }
                     _ => self.error("Enter an amount greater than $0.00."),
@@ -659,7 +664,10 @@ impl App {
             Ok((plan, charge)) => {
                 *slot = Some(choice);
                 // Bills, then cash + each fee = total, fee rules in small print.
-                let lines = vec![format!("Paid as {}", bills_text(&plan))];
+                let lines = vec![
+                    format!("Withdrawal amount to confirm: {amount}"),
+                    format!("Paid as {}", bills_text(&plan)),
+                ];
                 self.ask_confirm_sum(
                     "Withdraw this cash?",
                     lines,
@@ -685,7 +693,8 @@ impl App {
             total = total.checked_add(value).unwrap_or(total);
             lines.push(format!("{n} × ${} = {value}", d.dollars()));
         }
-        // Cash - any fee = total (and what the account receives, if converted).
+        lines.insert(0, format!("Deposit amount to confirm: {total}"));
+        // The customer confirms cash principal; the summary separately shows account impact.
         let preview = st.customer.as_ref().map(|s| customer::preview_deposit(&self.atm(), s, total));
         match preview {
             Some(Ok(credit)) => {
@@ -986,8 +995,9 @@ impl App {
             Ok(m) => {
                 self.show_family(st, Some(i));
                 self.notice(format!(
-                    "Moved {}. Your balance: {}. Child's balance: {}. Logged.",
+                    "Moved {}. Processing fee: {} (3%, paid by the source account). Your balance: {}. Child's balance: {}. Logged.",
                     m.currency.format(m.amount),
+                    m.currency.format(m.processing_fee),
                     m.currency.format(m.your_balance),
                     m.currency.format(m.child_balance)
                 ));
@@ -1034,6 +1044,7 @@ fn history_rows(rows: &[Row], my_account: &str) -> Vec<Vec<String>> {
             let (what, sign) = match r.action.as_str() {
                 "deposit" => (format!("Cash deposit ({})", r.detail), "+"),
                 "withdrawal" => (format!("Cash withdrawal ({})", r.detail), "−"),
+                "processing_fee" => ("Processing fee".into(), "−"),
                 "transfer" if mine => (
                     format!(
                         "Transfer to {}{by_guardian}",

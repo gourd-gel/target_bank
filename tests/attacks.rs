@@ -1,6 +1,8 @@
 //! Attacks on the bank core, from hostile front-end code (public API only)
 //! and from someone who can edit the database file (but has no key file).
 
+mod common;
+
 use atm::auth::CardAndPin;
 use atm::cash;
 use atm::db::Limit;
@@ -29,6 +31,7 @@ fn paths() -> (PathBuf, PathBuf) {
 fn new_bank(db: &Path, key: &Path) -> Atm {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _guard = LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    common::provision(db);
     Atm::create(db, key).unwrap()
 }
 
@@ -473,7 +476,7 @@ fn restoring_an_old_copy_of_the_database_is_detected() {
     cash::restock(&mut atm, &handler, d(20), 100).unwrap();
     let admin_s = auth::login_admin(&mut atm, ADMIN.0, ADMIN.1).unwrap();
     let mallory =
-        admin::create_customer(&mut atm, &admin_s, "Mal Lory", "1980-01-01", "7302", usd(500)).unwrap();
+        admin::create_customer(&mut atm, &admin_s, "Mal Lory", "1980-01-01", "7302", usd(515)).unwrap();
     drop(atm);
     let saved = std::fs::read(&db).unwrap();
 

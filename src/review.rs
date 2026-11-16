@@ -336,7 +336,7 @@ mod tests {
         assert!(matches!(err, AtmError::OnHold));
         // The customer is told to see a teller, not which rule matched.
         assert!(err.to_string().contains("see a teller") && !err.to_string().contains("rule"));
-        assert_eq!(customer::balance(&atm, &ann).unwrap(), usd(940));
+        assert_eq!(customer::balance(&atm, &ann).unwrap(), Cents::parse("938.20").unwrap());
         // The teller sees who, why and what was refused.
         let all = holds(&atm, &admin).unwrap();
         assert_eq!(all[0].account_number, ann.account_number());

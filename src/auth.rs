@@ -192,6 +192,25 @@ pub struct HandlerSession {
     clock: IdleClock,
 }
 
+/// Bank Authorities can inspect the revenue account, without teller or cash privileges.
+pub struct AuthoritiesSession {
+    bank: u64,
+    username: String,
+    clock: IdleClock,
+}
+
+impl AuthoritiesSession {
+    pub fn is_expired(&self) -> bool {
+        self.clock.is_expired()
+    }
+    pub fn end(&self) {
+        self.clock.ended.set(true);
+    }
+    pub fn actor(&self) -> String {
+        format!("authorities:{}", self.username)
+    }
+}
+
 impl HandlerSession {
     /// For a GUI timer: true once the session should be closed.
     pub fn is_expired(&self) -> bool {
@@ -284,6 +303,18 @@ impl Session for HandlerSession {
     /// Cash Handlers stop when the ATM is out of service.
     fn stops_when_halted(&self) -> bool {
         true
+    }
+}
+
+impl Session for AuthoritiesSession {
+    fn bank(&self) -> u64 {
+        self.bank
+    }
+    fn clock(&self) -> &IdleClock {
+        &self.clock
+    }
+    fn still_allowed(&self, conn: &Connection) -> Result<bool> {
+        still_staff(conn, &self.username, "authorities")
     }
 }
 
@@ -788,6 +819,10 @@ pub fn logout_handler(atm: &mut Atm, session: HandlerSession) -> Result<()> {
     log_logout(atm, &session, &session.actor(), None)
 }
 
+pub fn logout_authorities(atm: &mut Atm, session: AuthoritiesSession) -> Result<()> {
+    log_logout(atm, &session, &session.actor(), None)
+}
+
 // ---------------------------------------------------------------------------
 // First-run setup
 // ---------------------------------------------------------------------------
@@ -839,6 +874,10 @@ pub(crate) mod testing {
 
     pub const ADMIN: (&str, &str) = ("alice", "correct horse battery");
     pub const HANDLER: (&str, &str) = ("bob", "staple gun orchestra");
+
+    pub fn authorities(atm: &Atm) -> AuthoritiesSession {
+        AuthoritiesSession { bank: atm.id, username: "bank authorities".into(), clock: IdleClock::new() }
+    }
 
     pub fn setup(conn: &mut Atm) -> (AdminSession, HandlerSession) {
         first_run_setup(conn, ADMIN.0, ADMIN.1, HANDLER.0, HANDLER.1).unwrap();

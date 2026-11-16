@@ -3,7 +3,7 @@
 //! STRIDE (Tampering / Repudiation): every Teller Admin sign-in runs the full integrity check
 //! (log chain, balances and cash against the log, signed settings and rates, limits, rates and
 //! account flags against the log). On failure the ATM halts at once: no card is accepted,
-//! customer and Cash Handler sessions stop, only a Teller Admin can sign in. A teller can also
+//! customer and Cash Handler sessions stop; Teller Admins can sign in to restore service. A teller can also
 //! halt by hand. Only a Teller Admin can resume, logged with the check's result. Fail closed.
 //!
 //! The state is read from the signed log (newest halt or resume entry): no flag to edit.
@@ -36,7 +36,7 @@ pub(crate) fn halted(conn: &Connection) -> Result<Option<(String, String)>> {
 
 /// Whether the ATM is out of service, for the start screen (no sign-in
 /// needed: a real ATM shows "out of service" to anyone walking up). While it
-/// is, no card is accepted and only a Teller Admin can sign in.
+/// is, no card is accepted. Authorities revenue access remains available.
 pub fn out_of_service(atm: &Atm) -> Result<bool> {
     Ok(halted(&*atm.read()?)?.is_some())
 }

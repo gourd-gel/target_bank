@@ -1,7 +1,7 @@
 # Bank of CCNY ATM: User Guide
 
 This guide walks through every screen of the ATM, step by step, for each of
-the three kinds of users. You don't need to know any code to follow it.
+the three booth roles. You don't need to know any code to follow it.
 
 **Access model:** system users have access only to the GUI. The programmable
 interface, source code, Cargo commands, and maintenance tools are accessible
@@ -721,8 +721,7 @@ service. Resume service now that you've reviewed it? (y/n)". While out of
 service the main menu shows "OUT OF SERVICE: no cards accepted; Teller Admin
 sign-in only", a customer gets "This ATM is temporarily out of service.
 Please use another ATM." before typing anything, and the Cash Handler gets
-"The ATM is out of service. Only a Teller Admin can sign in until it is
-resumed."
+"The ATM is out of service. Customer and Cash Handler access is paused until a Teller Admin resumes service."
 
 When a session ends (log out, or the 2-minute timeout noticed at the next
 key), the command line clears the screen and its scrollback, so the next
@@ -736,7 +735,7 @@ person can't read or scroll back to the last one.
 |---|---|---|
 | "This card is locked. Please see a teller..." | 3 wrong PINs in a row (at the ATM or at the teller's counter), or 3 tries with a card number that doesn't exist | A teller unlocks it after checking ID, once a day at most ([4.4](#44-locked-cards)) |
 | "This ATM is temporarily out of service. Please use another ATM." | A teller halted the ATM, or the integrity check at a Teller Admin sign-in failed. No cards are taken; signed-in customers are stopped too | Customers: use another ATM. Teller: review, then Resume service ([4.1](#41-sign-in-and-out)) |
-| "The ATM is out of service. Only a Teller Admin can sign in until it is resumed." | The Cash Handler tried to sign in, or was signed in, while the ATM is out of service | Wait until a Teller Admin resumes service |
+| "The ATM is out of service. Customer and Cash Handler access is paused until a Teller Admin resumes service." | The Cash Handler tried to sign in, or was signed in, while the ATM is out of service | Wait until a Teller Admin resumes service |
 | "This account is frozen by the bank. Please see a teller inside the branch." | A teller froze the account (for example, a card reported stolen). Its cards are refused | See a teller with photo ID; only a teller unfreezes it ([4.3](#43-customer-accounts)) |
 | "The holder's account is frozen by the bank, so their card can't confirm this." | Joint holder, Youth account or Add guardian: the current holder's account is frozen by the bank | Unfreeze it first if the holder is who they say they are |
 | "Your session has ended. Please log in again." | Your card was locked or your account closed while you were signed in (or, on the command line, 2 minutes without input) | Insert your card again; see a teller if it is locked |
@@ -770,3 +769,18 @@ person can't read or scroll back to the last one.
 | "Not allowed: this is a demo database with published passwords; it can't run as a real bank." | `atm.db` is a copy of practice data, whose passwords are public | Use the real bank's files. Practice data runs only with `--demo` |
 | "Not allowed: this is a real bank's database, not demo data." | Practice mode found a real bank's data in `atm-demo.db` | Put the real data back where it belongs; delete `atm-demo.*` for fresh practice data |
 | "System clock is behind the audit log. Fix the clock before using this ATM." | The computer's clock is earlier than the newest log entry | Fix the clock, then start again |
+
+
+## Processing fees
+
+Withdrawals, deposits, transfers, and guardian transfers incur a **3% processing fee**, rounded up to a supported currency unit. Withdrawals and outgoing transfers debit principal plus the fee; deposits credit principal less the fee. Transfer recipients receive the full principal. Existing ATM/exchange fees still apply. Receipts and history show processing fees separately. Read [Processing fees](PROCESSING_FEES.md) for programmer provisioning and database backup requirements. Examples elsewhere in this guide show principal; actual balances also reflect processing fees.
+
+
+## Bank Authorities: revenue account
+
+Bank Authorities is a backend-only role and does not use the booth. The GUI and booth CLI expose only Customer, Teller Admin and Cash Handler access. Authorities alerts, authenticated revenue views and reasoned credit/debit adjustments remain available through the core library APIs. Revenue continues to collect processing fees automatically. Follow [Bank Authorities sign-in](PROCESSING_FEES.md#bank-authorities-sign-in-code-level) for phone setup, OTP verification, revenue API access and sign-out.
+
+
+## ATM origin on teller OTP alerts
+
+Bank Authorities alerts now identify the originating ATM with its configured location, persistent ATM ID, UTC timestamp and HMAC-SHA256 authentication signature. These details accompany successful code requests and invalid, unknown or throttled requests. The programmer configures the branch/address/terminal with `cargo atm-location "Location" --directory /path/to/bank-folder`, using the programmer PIN. Until configured, the location reads **Not configured**. See [ATM origin alerts](ATM_ALERTS.md).

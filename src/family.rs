@@ -14,6 +14,7 @@ use crate::db::{self, Limit, Number};
 use crate::error::{AtmError, Result};
 use crate::fx::{self, Currency};
 use crate::money::Cents;
+use crate::processing;
 use crate::review;
 use rusqlite::{Connection, OptionalExtension, params};
 
@@ -203,6 +204,7 @@ pub struct FamilyMove {
     pub reference: i64,
     pub currency: Currency,
     pub amount: Cents,
+    pub processing_fee: Cents,
     pub your_balance: Cents,
     pub child_balance: Cents,
 }
@@ -246,7 +248,10 @@ pub fn move_money(
         return Err(AtmError::FrozenByBank);
     }
     review::check_not_held(&tx, from)?;
-    if amount > customer::balance_of(&tx, from)? {
+    let total = amount
+        .checked_add(processing::fee(currency, amount)?)
+        .ok_or(AtmError::InvalidInput("amount is too large"))?;
+    if total > customer::balance_of(&tx, from)? {
         return Err(AtmError::InsufficientFunds);
     }
     let usd = fx::usd_value(&tx, currency, amount)?;
@@ -263,7 +268,7 @@ pub fn move_money(
     }
     // Same activity rules as any transfer: a stolen guardian card can't sweep
     // a child's savings unchecked. On a hold, keep its log row.
-    if review::screen(&tx, from, review::Move::Transfer { to }, usd, amount)? == review::Screen::Held {
+    if review::screen(&tx, from, review::Move::Transfer { to }, usd, total)? == review::Screen::Held {
         tx.commit()?;
         return Err(AtmError::OnHold);
     }
@@ -287,10 +292,13 @@ pub fn move_money(
             detail: &detail,
         },
     )?;
+    let processing_fee =
+        processing::charge(&tx, &session.actor(), from, reference, "guardian_transfer", currency, amount)?;
     let moved = FamilyMove {
         reference,
         currency,
         amount,
+        processing_fee,
         your_balance: customer::balance_of(&tx, own)?,
         child_balance: customer::balance_of(&tx, child)?,
     };
@@ -346,10 +354,10 @@ mod tests {
         let kid_no = kid.account_number.as_str();
         // In: $50 from Pat's account to Kid's.
         let m = move_money(&mut conn, &p, kid_no, Direction::ToChild, usd(50)).unwrap();
-        assert_eq!((m.your_balance, m.child_balance), (usd(450), usd(350)));
+        assert_eq!((m.your_balance, m.child_balance), (Cents::parse("448.50").unwrap(), usd(350)));
         // Out: $100 back to Pat (above the child's own $50 transfer cap).
         let m = move_money(&mut conn, &p, kid_no, Direction::FromChild, usd(100)).unwrap();
-        assert_eq!((m.your_balance, m.child_balance), (usd(550), usd(250)));
+        assert_eq!((m.your_balance, m.child_balance), (Cents::parse("548.50").unwrap(), usd(247)));
         assert!(matches!(
             move_money(&mut conn, &p, kid_no, Direction::FromChild, usd(251)),
             Err(AtmError::InsufficientFunds)
@@ -388,7 +396,7 @@ mod tests {
         ));
         // The hold is kept (logged) and the money stayed put.
         assert!(review::hold_reason(&conn.conn, kid_id).unwrap().is_some_and(|r| r.starts_with("rule 2")));
-        assert_eq!(customer::balance_of(&conn.conn, kid_id).unwrap(), usd(270));
+        assert_eq!(customer::balance_of(&conn.conn, kid_id).unwrap(), Cents::parse("269.10").unwrap());
         // Money can still go in; nothing more comes out until a teller releases it.
         move_money(&mut conn, &p, kid_no, Direction::ToChild, usd(5)).unwrap();
         assert!(matches!(
@@ -453,7 +461,7 @@ mod tests {
         ));
         set_frozen(&mut conn, &p, &kid.account_number, false).unwrap();
         assert!(customer::withdraw(&mut conn, &k, usd(200), twenties()).is_ok());
-        assert_eq!(youth_history(&conn, &p, &kid.account_number, 0).unwrap().len(), 1);
+        assert_eq!(youth_history(&conn, &p, &kid.account_number, 0).unwrap().len(), 2);
     }
 
     #[test]
@@ -525,7 +533,7 @@ mod tests {
         let ann = auth::login_customer(&mut conn, &a.card_number, "4821").unwrap();
         let ben = auth::login_customer(&mut conn, &b.card_number, "7305").unwrap();
         customer::withdraw(&mut conn, &ann, usd(600), twenties()).unwrap();
-        assert_eq!(customer::balance(&conn, &ben).unwrap(), usd(2400));
+        assert_eq!(customer::balance(&conn, &ben).unwrap(), usd(2382));
         // Ben can't use a "fresh" $1,000: the limit is per account.
         assert!(matches!(
             customer::withdraw(&mut conn, &ben, usd(500), twenties()),

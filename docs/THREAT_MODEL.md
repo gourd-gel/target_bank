@@ -1,5 +1,27 @@
 # Threat model: Bank of CCNY ATM
 
+## ATM origin on Authorities alerts
+
+Teller OTP alerts bind the configured physical location, a persistent random ATM ID, the UTC time, requested phone and verification text/rejection reason into a complete-body HMAC-SHA256 tag. Its key is derived from the runtime master key using a dedicated alert purpose label. This does not reuse the existing key fingerprint as a signature. The ID and imported location are sealed metadata; later location imports are audit logged. IDs survive restarts and are independent across newly created bank databases, including databases sharing a runtime key.
+
+The programmer configures the location with the PIN-protected `cargo atm-location` command; no teller or customer API changes it. The configuration file follows the existing trusted-filesystem maintenance model. Empty/oversized labels and control characters are rejected to prevent injected alert fields. An unconfigured installation reports its location as **Not configured**. Location is declared configuration, not geolocation or hardware attestation. Anyone with `atm.key` can authenticate messages; cloning the complete database preserves the ID. See [ATM origin alerts](ATM_ALERTS.md) for setup and signature scope.
+
+## Bank revenue account and Authorities access
+
+Every processing fee now has a matching bank revenue credit, committed atomically with the customer debit and encrypted fee record. Revenue balances remain separate by currency. Migration credits previously collected fees once without a second customer debit. Revenue tables are included in the database seal; integrity reconciliation checks balances, fee references and authorized adjustment entries against the signed audit.
+
+Bank Authorities has no booth GUI/CLI entry point, frontend session state, revenue callbacks or dashboard. It is a code-level role intended for an authorized off-booth integration. A distinct `AuthoritiesSession`, issued only after verifying the configured authorities phone code, gates revenue views and edits. The public API does not accept teller/customer/handler sessions for revenue operations. Authorities cannot gain admin or handler powers from this session. Login codes use an authorities-specific challenge purpose and a separate `.authorities-login.txt` file so teller alerts cannot overwrite them. Five-minute expiry, five attempts, single use, send throttling and idle expiry apply. Like teller recovery, this is a local-file simulation; filesystem access to the delivered code is trusted.
+
+Authorities edit revenue through recorded credits/debits with a reason, rather than overwriting ledger history. Overdrafts, unsupported currency precision, empty reasons and control characters are refused. Adjustments do not dispense cash or change customer balances. The separate programmer-encrypted fee ledger remains outside authorities decryption access. Authorities can inspect and adjust revenue during an ATM service halt, but corrupted database state still prevents all operations.
+
+## Processing fee extension
+
+Every successful withdrawal, deposit, transfer and guardian transfer pays a fixed 3% processing fee, rounded up to a supported account currency unit. A separate signed bank audit entry records the debit and original transaction reference; reconciliation includes it without changing physical cash accounting. Previews are free, and failures roll back all money and fee changes.
+
+The separate `atm.processing-fees.db` stores RSA-OAEP-SHA256 encrypted records. Only the public key is installed on the ATM; the programmer keeps the private key off the bank machine. Bank staff can see charges in the bank audit and access ciphertext as application owners, but cannot decrypt the separate payloads with `atm.key`. The private key, rather than a bank staff role, authorizes offline decryption. Compromise of that private key exposes the encrypted records. The ledger does not conceal the fee amounts already disclosed to customers and the bank.
+
+The sealed main database pins a hash covering the private ledger schema, installed public key, and encrypted rows. Fee record references must match bank processing-fee entries. Both databases use one attached SQLite transaction with DELETE rollback journals and FULL synchronization; backups must capture both databases and the main anchor consistently. See [Processing fees](PROCESSING_FEES.md) for provisioning and custody. SQLite documents the multi-file atomicity conditions in [ATTACH DATABASE](https://www.sqlite.org/lang_attach.html).
+
 ## Cell phone recovery extension
 
 Teller Admins may sign in using a registered phone number and a code delivered

@@ -1,6 +1,8 @@
 //! First security review: a dishonest teller, a customer, and someone who
 //! can edit atm.db. Each test asserts the SAFE result.
 
+mod common;
+
 use atm::auth::CardAndPin;
 use atm::db::Limit;
 use atm::error::AtmError;
@@ -22,6 +24,7 @@ fn bank() -> (Atm, auth::AdminSession, PathBuf, PathBuf) {
     std::fs::create_dir_all(&dir).unwrap();
     let n = N.fetch_add(1, Ordering::SeqCst);
     let (db, key) = (dir.join(format!("bank-{n}.db")), dir.join("shared.key"));
+    common::provision(&db);
     let mut atm = Atm::create(&db, &key).unwrap();
     auth::first_run_setup(&mut atm, ADMIN.0, ADMIN.1, HANDLER.0, HANDLER.1).unwrap();
     let h = auth::login_handler(&mut atm, HANDLER.0, HANDLER.1).unwrap();

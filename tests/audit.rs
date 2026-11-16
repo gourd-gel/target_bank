@@ -1,6 +1,8 @@
 //! Exploits found in the second security audit. Each test asserts the SAFE
 //! result.
 
+mod common;
+
 use atm::error::AtmError;
 use atm::money::{Cents, Denomination};
 use atm::{Atm, admin, auth, cash, customer};
@@ -20,6 +22,7 @@ fn bank() -> (Atm, auth::AdminSession, PathBuf, PathBuf) {
     std::fs::create_dir_all(&dir).unwrap();
     let n = N.fetch_add(1, Ordering::SeqCst);
     let (db, key) = (dir.join(format!("bank-{n}.db")), dir.join("shared.key"));
+    common::provision(&db);
     let mut atm = Atm::create(&db, &key).unwrap();
     auth::first_run_setup(&mut atm, ADMIN.0, ADMIN.1, HANDLER.0, HANDLER.1).unwrap();
     let h = auth::login_handler(&mut atm, HANDLER.0, HANDLER.1).unwrap();
@@ -56,7 +59,7 @@ fn a_finished_deposit_is_never_reported_as_failed_and_a_blocked_anchor_stops_the
 
     // Unblocked: the next operation writes the anchor and carries on.
     std::fs::remove_dir(&anchor).unwrap();
-    assert_eq!(customer::balance(&atm, &m).unwrap(), usd(2_000));
+    assert_eq!(customer::balance(&atm, &m).unwrap(), usd(1_940));
     assert!(anchor.is_file());
     drop(atm);
     assert!(Atm::open(&db, &key).is_ok(), "the anchor written on catch-up doesn't match");

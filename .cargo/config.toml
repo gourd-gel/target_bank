@@ -1,2 +1,3 @@
 [alias]
 authorities-phone = "run --quiet --features programmer-tools --bin bank-authorities --"
+atm-location = "run --quiet --features programmer-tools --bin bank-atm-location --"

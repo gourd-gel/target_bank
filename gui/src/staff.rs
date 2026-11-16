@@ -74,6 +74,10 @@ pub fn connect(app: &Rc<App>, window: &AppWindow) {
     bank.on_start_staff(move |role| {
         a.touch();
         // Out of service: only the Teller Admin may sign in.
+        if !matches!(role, 1 | 2) {
+            a.error("Unknown staff role.");
+            return;
+        }
         if role != ROLE_ADMIN && a.out_of_service() {
             a.error(STAFF_HALTED);
             return;

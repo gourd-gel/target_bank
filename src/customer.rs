@@ -20,6 +20,7 @@ use crate::error::{AtmError, Result};
 use crate::fx::{self, Conversion, Currency, Fee, FeeRule, SumLine};
 use crate::input;
 use crate::money::{Cents, Denomination};
+use crate::processing;
 use crate::review::{self, Move, Screen};
 use rusqlite::{Connection, OptionalExtension, params};
 
@@ -272,7 +273,8 @@ fn precheck_withdrawal(conn: &Connection, session: &CustomerSession, amount: Cen
     }
     review::check_not_held(conn, account_id)?;
     let other_bank = session.role() == HolderRole::Guest;
-    let charge = fx::charge_for(conn, currency_of(conn, account_id)?, amount, other_bank)?;
+    let charge =
+        processing::apply(fx::charge_for(conn, currency_of(conn, account_id)?, amount, other_bank)?, false)?;
     if charge.account_amount > balance_of(conn, account_id)? {
         return Err(AtmError::InsufficientFunds);
     }
@@ -324,7 +326,11 @@ pub fn withdraw(
         return Err(AtmError::OnHold);
     }
     cash::take_plan(&tx, &plan)?;
-    debit(&tx, id, charge.account_amount)?;
+    debit(
+        &tx,
+        id,
+        charge.account_amount.checked_sub(charge.processing_fee).ok_or(AtmError::InsufficientFunds)?,
+    )?;
     let reference = audit::append(
         &tx,
         &Entry {
@@ -332,10 +338,24 @@ pub fn withdraw(
             action: Action::Withdrawal,
             account_id: Some(id),
             counterparty_id: None,
-            amount: Some(charge.account_amount),
+            amount: Some(
+                charge
+                    .account_amount
+                    .checked_sub(charge.processing_fee)
+                    .ok_or(AtmError::InsufficientFunds)?,
+            ),
             usd: Some(amount),
             detail: &detail_with(cash::describe(&plan), &charge),
         },
+    )?;
+    processing::charge(
+        &tx,
+        &session.actor(),
+        id,
+        reference,
+        "withdrawal",
+        charge.currency,
+        charge.cash_amount,
     )?;
     let balance_after = balance_of(&tx, id)?;
     tx.commit()?;
@@ -348,7 +368,7 @@ pub fn preview_deposit(atm: &Atm, session: &CustomerSession, amount: Cents) -> R
     atm.admit(session)?;
     not_guest(session)?;
     let conn = &atm.read()?;
-    fx::credit_for(conn, currency_of(conn, session.account_id())?, amount)
+    processing::apply(fx::credit_for(conn, currency_of(conn, session.account_id())?, amount)?, true)
 }
 
 /// Deposit cash as (bill, count) pairs, the way a machine counts what you feed it.
@@ -384,11 +404,18 @@ pub fn deposit(atm: &mut Atm, session: &CustomerSession, bills: &[(Denomination,
     if total.checked_add(amount).is_none_or(|t| t > PHYSICAL_CAPACITY) {
         return Err(AtmError::NotAllowed("this machine is full; please use another ATM"));
     }
-    let credited = fx::credit_for(&tx, currency_of(&tx, id)?, amount)?;
+    let credited = processing::apply(fx::credit_for(&tx, currency_of(&tx, id)?, amount)?, true)?;
     for &(denom, count) in &plan {
         cash::add_bills(&tx, denom, count)?;
     }
-    credit(&tx, id, credited.account_amount)?;
+    credit(
+        &tx,
+        id,
+        credited
+            .account_amount
+            .checked_add(credited.processing_fee)
+            .ok_or(AtmError::InvalidInput("amount is too large"))?,
+    )?;
     plan.sort_by_key(|&(d, _)| std::cmp::Reverse(d));
     let reference = audit::append(
         &tx,
@@ -397,10 +424,24 @@ pub fn deposit(atm: &mut Atm, session: &CustomerSession, bills: &[(Denomination,
             action: Action::Deposit,
             account_id: Some(id),
             counterparty_id: None,
-            amount: Some(credited.account_amount),
+            amount: Some(
+                credited
+                    .account_amount
+                    .checked_add(credited.processing_fee)
+                    .ok_or(AtmError::InvalidInput("amount is too large"))?,
+            ),
             usd: Some(amount),
             detail: &detail_with(cash::describe(&plan), &credited),
         },
+    )?;
+    processing::charge(
+        &tx,
+        &session.actor(),
+        id,
+        reference,
+        "deposit",
+        credited.currency,
+        credited.cash_amount,
     )?;
     let balance_after = balance_of(&tx, id)?;
     tx.commit()?;
@@ -463,13 +504,16 @@ pub fn transfer(
     }
     currency.check_amount(amount)?; // e.g. no half won
     // Spec: sufficient funds.
-    if amount > balance_of(&tx, from)? {
+    let total = amount
+        .checked_add(processing::fee(currency, amount)?)
+        .ok_or(AtmError::InvalidInput("amount is too large"))?;
+    if total > balance_of(&tx, from)? {
         return Err(AtmError::InsufficientFunds);
     }
     let usd = fx::usd_value(&tx, currency, amount)?;
     check_daily_limit(&tx, from, Limit::Transfer, usd)?;
     // Unusual pattern: refuse, and keep the hold row for the teller.
-    if review::screen(&tx, from, Move::Transfer { to }, usd, amount)? == Screen::Held {
+    if review::screen(&tx, from, Move::Transfer { to }, usd, total)? == Screen::Held {
         tx.commit()?;
         return Err(AtmError::OnHold);
     }
@@ -489,9 +533,10 @@ pub fn transfer(
             detail: "",
         },
     )?;
+    processing::charge(&tx, &session.actor(), from, reference, "transfer", currency, amount)?;
     let balance_after = balance_of(&tx, from)?;
     tx.commit()?;
-    let moved = Conversion::plain(currency, usd, amount);
+    let moved = processing::apply(Conversion::plain(currency, usd, amount), false)?;
     Ok(receipt(
         reference,
         "transfer",
@@ -761,8 +806,12 @@ fn receipt(
         counterparty,
         amount: money.account_amount,
         currency: money.currency,
-        summary: if bills.is_empty() { Vec::new() } else { money.summary(kind == "deposit") },
-        fine_print: if bills.is_empty() { String::new() } else { money.fine_print() },
+        summary: if bills.is_empty() {
+            processing::transfer_summary(money.currency, money.cash_amount).expect("validated transfer")
+        } else {
+            money.summary(kind == "deposit")
+        },
+        fine_print: money.fine_print(),
         bills,
         balance_after,
     }
@@ -865,7 +914,7 @@ mod tests {
     #[test]
     fn a_teller_can_approve_more_than_the_daily_limit_for_today_only() {
         let (mut conn, admin, _, ann, _) = world();
-        deposit(&mut conn, &ann, &[(d(50), 20)]).unwrap(); // balance $2,000
+        deposit(&mut conn, &ann, &[(d(50), 20)]).unwrap(); // balance $1,970 after processing fee
         // Over the $1,000 limit: refused, and told a teller can approve more.
         let err = check_withdrawal(&conn, &ann, usd(1100)).unwrap_err();
         assert!(matches!(err, AtmError::LimitExceeded { see_teller: true, .. }));
@@ -977,7 +1026,10 @@ mod tests {
         let ray = auth::login_customer(&mut conn, &card.card_number, "2468").unwrap();
         // $40 cash + $3.00 ATM fee (3%, at least $3) = $43 charged; the limit counts the cash.
         let r = withdraw(&mut conn, &ray, usd(40), BillChoice::Only(d(20))).unwrap();
-        assert_eq!((r.amount, r.balance_after), (usd(43), usd(357)));
+        assert_eq!(
+            (r.amount, r.balance_after),
+            (Cents::parse("44.20").unwrap(), Cents::parse("355.80").unwrap())
+        );
         assert_eq!(
             (r.summary[1].label.as_str(), r.summary[1].amount.as_str()),
             ("+ Other bank's ATM fee", "$3.00")
@@ -986,7 +1038,11 @@ mod tests {
         assert_eq!(limits(&conn, &ray).unwrap()[0].remaining_today, usd(960));
         let rule = FeeRule { percent_bp: 300, minimum: usd(3) };
         assert_eq!(account_info(&conn, &ray).unwrap().atm_fee, Some(rule));
-        assert_eq!(account_info(&conn, &ann).unwrap().atm_fee, None, "our own customers pay no fee");
+        assert_eq!(
+            account_info(&conn, &ann).unwrap().atm_fee,
+            None,
+            "our own customers pay no other-bank ATM fee"
+        );
         // Everything else is refused, before anything moves.
         let refused = |r: Result<()>| matches!(r, Err(AtmError::NotAllowed(_)));
         assert!(refused(deposit(&mut conn, &ray, &[(d(20), 1)]).map(|_| ())));
@@ -1044,8 +1100,20 @@ mod tests {
         let jin = auth::login_customer(&mut conn, &card.card_number, "8024").unwrap();
         // $20 = 27,710 won, plus two $3 minimum fees of 4,157 won each (whole won, rounded up).
         let r = withdraw(&mut conn, &jin, usd(20), BillChoice::Any).unwrap();
-        assert_eq!(r.amount, Cents::from_dollars(36_024));
-        assert_eq!(Currency::Krw.format(r.balance_after), "63,976 KRW");
+        assert_eq!(r.amount, Cents::from_dollars(36_856));
+        assert_eq!(Currency::Krw.format(r.balance_after), "63,144 KRW");
+        assert_eq!(
+            conn.query_row("SELECT balance_cents FROM bank_revenue WHERE currency = 'KRW'", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            83_200
+        );
+        assert_eq!(
+            conn.query_row("SELECT balance_cents FROM bank_revenue WHERE currency = 'USD'", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
         // Half a won can't be opened with.
         assert!(
             admin::register_guest_card(
@@ -1110,7 +1178,7 @@ mod tests {
     fn withdraw_moves_money_and_bills_and_gives_a_receipt() {
         let (mut conn, _, handler, ann, _) = world();
         let r = withdraw(&mut conn, &ann, usd(100), BillChoice::Only(d(20))).unwrap();
-        assert_eq!((r.balance_after, r.bills.clone()), (usd(900), vec![(d(20), 5)]));
+        assert_eq!((r.balance_after, r.bills.clone()), (usd(897), vec![(d(20), 5)]));
         assert!(r.account.starts_with("******") && r.reference > 0);
         assert!(cash::view(&conn, &handler).unwrap().bills.contains(&(d(20), 95)));
     }
@@ -1126,12 +1194,12 @@ mod tests {
     #[test]
     fn daily_limit_is_cumulative() {
         let (mut conn, _, _, ann, _) = world();
-        deposit(&mut conn, &ann, &[(d(50), 10)]).unwrap(); // balance $1,500
+        deposit(&mut conn, &ann, &[(d(50), 10)]).unwrap(); // balance $1,485 after processing fee
         withdraw(&mut conn, &ann, usd(800), BillChoice::Only(d(20))).unwrap();
         let err = withdraw(&mut conn, &ann, usd(220), BillChoice::Only(d(20))).unwrap_err();
         assert!(matches!(err, AtmError::LimitExceeded { remaining, .. } if remaining == usd(200)));
         withdraw(&mut conn, &ann, usd(200), BillChoice::Only(d(20))).unwrap(); // exactly to the $1,000 limit
-        assert_eq!(balance(&conn, &ann).unwrap(), usd(500));
+        assert_eq!(balance(&conn, &ann).unwrap(), usd(455));
     }
 
     #[test]
@@ -1176,7 +1244,7 @@ mod tests {
     fn deposit_credits_account_and_respects_the_daily_limit() {
         let (mut conn, _, handler, _, bo) = world();
         let r = deposit(&mut conn, &bo, &[(d(20), 5), (d(100), 2)]).unwrap();
-        assert_eq!((r.amount, r.balance_after), (usd(300), usd(350)));
+        assert_eq!((r.amount, r.balance_after), (usd(291), usd(341)));
         assert!(cash::view(&conn, &handler).unwrap().bills.contains(&(d(100), 2)));
         assert!(matches!(deposit(&mut conn, &bo, &[(d(100), 98)]), Err(AtmError::LimitExceeded { .. })));
         assert!(deposit(&mut conn, &bo, &[(d(100), 97)]).is_ok());
@@ -1187,7 +1255,7 @@ mod tests {
     fn transfer_moves_money_exactly_once() {
         let (mut conn, _, _, ann, bo) = world();
         transfer(&mut conn, &ann, bo.account_number(), Cents::parse("250.75").unwrap()).unwrap();
-        assert_eq!(balance(&conn, &ann).unwrap(), Cents::parse("749.25").unwrap());
+        assert_eq!(balance(&conn, &ann).unwrap(), Cents::parse("741.72").unwrap());
         assert_eq!(balance(&conn, &bo).unwrap(), Cents::parse("300.75").unwrap());
     }
 
@@ -1216,7 +1284,7 @@ mod tests {
         let (mut conn, _, _, ann, bo) = world();
         withdraw(&mut conn, &ann, usd(40), BillChoice::Only(d(20))).unwrap();
         transfer(&mut conn, &ann, bo.account_number(), usd(10)).unwrap();
-        assert_eq!(history(&conn, &ann, 0).unwrap().len(), 2);
+        assert_eq!(history(&conn, &ann, 0).unwrap().len(), 4);
         let bo_rows = history(&conn, &bo, 0).unwrap();
         assert_eq!(bo_rows.len(), 1, "Bo sees the incoming transfer, not Ann's withdrawal");
         assert_eq!(bo_rows[0].action, "transfer");

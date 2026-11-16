@@ -351,6 +351,8 @@ pub struct Conversion {
     pub fees: Vec<FeeLine>,
     /// Total charged (withdrawal) or added (deposit), in the account's currency.
     pub account_amount: Cents,
+    /// Fixed processing fee in the account currency, separate from FX/ATM fees.
+    pub processing_fee: Cents,
 }
 
 impl Conversion {
@@ -363,6 +365,7 @@ impl Conversion {
             rate: None,
             fees: Vec::new(),
             account_amount: amount,
+            processing_fee: Cents::ZERO,
         }
     }
 
@@ -379,13 +382,43 @@ impl Conversion {
             rows.push(row(&format!("{sign} {}", f.fee.label()), f.usd.to_string(), false));
             total = total.and_then(|t| if deposit { t.checked_sub(f.usd) } else { t.checked_add(f.usd) });
         }
-        if self.fees.is_empty() {
+        if self.fees.is_empty() && self.processing_fee.is_zero() {
             rows.push(row("Fees", Cents::ZERO.to_string(), false));
         }
-        rows.push(row("Total", total.map_or_else(String::new, |t| t.to_string()), true));
+        rows.push(row(
+            if self.processing_fee.is_zero() { "Total" } else { "Subtotal before processing fee" },
+            total.map_or_else(String::new, |t| t.to_string()),
+            true,
+        ));
         if self.currency != Currency::Usd {
-            let label = if deposit { "Added to your account" } else { "Charged to your account" };
-            rows.push(row(label, self.currency.format(self.account_amount), true));
+            let label = if !self.processing_fee.is_zero() {
+                "Subtotal in account currency"
+            } else if deposit {
+                "Added to your account"
+            } else {
+                "Charged to your account"
+            };
+            rows.push(row(
+                label,
+                self.currency.format(if deposit {
+                    self.account_amount.checked_add(self.processing_fee).unwrap_or(self.account_amount)
+                } else {
+                    self.account_amount.checked_sub(self.processing_fee).unwrap_or(self.account_amount)
+                }),
+                true,
+            ));
+        }
+        if !self.processing_fee.is_zero() {
+            rows.push(row(
+                if deposit { "− Processing fee (3%)" } else { "+ Processing fee (3%)" },
+                self.currency.format(self.processing_fee),
+                false,
+            ));
+            rows.push(row(
+                if deposit { "Net added to your account" } else { "Total charged to your account" },
+                self.currency.format(self.account_amount),
+                true,
+            ));
         }
         rows
     }
@@ -401,6 +434,10 @@ impl Conversion {
         };
         if let Some(rate) = &self.rate {
             parts.push(format!("Rate: {rate}."));
+        }
+        if !self.processing_fee.is_zero() {
+            parts
+                .push("Processing fee: 3% of the principal, rounded up to a supported currency unit.".into());
         }
         parts.join(" ")
     }
@@ -654,7 +691,15 @@ pub(crate) fn charge_for(
         .iter()
         .try_fold(cash_amount, |sum, f| sum.checked_add(f.amount))
         .ok_or(AtmError::InvalidInput("amount is too large"))?;
-    Ok(Conversion { currency, usd, cash_amount, rate: rate.as_ref().map(rate_line), fees, account_amount })
+    Ok(Conversion {
+        currency,
+        usd,
+        cash_amount,
+        rate: rate.as_ref().map(rate_line),
+        fees,
+        account_amount,
+        processing_fee: Cents::ZERO,
+    })
 }
 
 /// Deposit: what the account receives for `usd` in cash. Foreign accounts:
@@ -672,7 +717,15 @@ pub(crate) fn credit_for(conn: &Connection, currency: Currency, usd: Cents) -> R
         AtmError::NotAllowed("this deposit is too small to cover the exchange fee; please deposit more"),
     )?;
     let fees = vec![FeeLine { fee: Fee::Exchange, rule, usd: fee_usd, amount: fee_amount }];
-    Ok(Conversion { currency, usd, cash_amount, rate: Some(rate_line(&rate)), fees, account_amount })
+    Ok(Conversion {
+        currency,
+        usd,
+        cash_amount,
+        rate: Some(rate_line(&rate)),
+        fees,
+        account_amount,
+        processing_fee: Cents::ZERO,
+    })
 }
 
 /// US-dollar value of an amount in `currency` (no fee, rounded up), so a

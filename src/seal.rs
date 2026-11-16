@@ -34,7 +34,17 @@ const DUMP: [&str; 12] = [
 /// so no two different databases give the same byte stream.
 fn digest(conn: &Connection) -> Result<[u8; 32]> {
     let mut hash = Sha256::new();
-    for (i, sql) in DUMP.iter().enumerate() {
+    // Existing banks retain their original digest until revenue migration creates these tables.
+    let has_revenue: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name = 'bank_revenue' AND type = 'table')",
+        [],
+        |r| r.get(0),
+    )?;
+    let extra = [
+        "SELECT rowid, * FROM bank_revenue ORDER BY rowid",
+        "SELECT rowid, * FROM revenue_ledger ORDER BY rowid",
+    ];
+    for (i, sql) in DUMP.iter().chain(extra.iter().filter(|_| has_revenue)).enumerate() {
         hash.update((i as u64).to_le_bytes());
         let mut stmt = conn.prepare(sql)?;
         let columns = stmt.column_count();

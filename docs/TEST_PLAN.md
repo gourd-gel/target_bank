@@ -364,3 +364,24 @@ found three more gaps, two of the new tests grew:
 while a customer waits; the reason stays on screen after the wipe, S35).
 The guardian move into a frozen account above is S33. The fifth compile-fail
 check is new: a front end can't make up a rate feed.
+
+
+## Processing fee verification
+
+Verify 3% processing fees on deposits, withdrawals, bank transfers, and both guardian transfer directions, including rounding and foreign currency units. Confirm the sender pays and recipients get full principal; compare quotes, receipts, history, daily principal limits, and balance/cash reconciliation. Reject withdrawals/transfers when balance covers principal but not the fee. Failed or held attempts must not create fee entries.
+
+Provision the public key before money transactions; keep the private key off the bank machine. Decrypt the separate ledger with the programmer tool and verify amounts/references. A wrong key must fail. Missing public keys or failed fee writes must roll back balances, cash and both ledgers. Edit, delete or restore an old fee database and confirm operations stop. Back up and restore both databases and the matching anchor together. Older transaction examples show principal; include processing fees in expected balances.
+
+
+## Bank revenue verification
+
+Verify every processing-fee debit has one matching revenue credit, including both guardian directions and foreign-currency withdrawals. Revenue currencies must remain separate. Confirm existing fee history migrates once, with customer balances unchanged. Verify revenue and both ledgers roll back if revenue credit fails. Reconcile revenue with the signed audit and refuse altered revenue rows.
+
+Verify the booth GUI and CLI have no Bank Authorities sign-in, dashboard or revenue controls. Authenticate through the core `request_authorities_code` / `login_authorities` APIs using the configured authorities phone. Verify code expiry, attempt limits, single use, send throttling, separation from teller login and notification files, and idle/session/role checks. Confirm balances, history and reasoned credit/debit adjustments; reject overdrafts, zero amounts, fractional yen/won and missing/invalid reasons. Tellers, handlers and customers cannot manage revenue. Authorities cannot use teller/handler operations. Historical entries stay append-only, and the programmer's encrypted fee records stay private.
+
+
+## ATM alert origin verification
+
+Verify enrollment, valid recovery, invalid-phone, unknown-phone and throttled alerts include location, a persistent ATM ID, UTC time and the full-body authentication signature. Changing the body must invalidate its signature. Restart the same installation and confirm the ID remains stable; independently create another bank using the same runtime key and confirm its ID differs. Change location and confirm the next alert updates location without changing the ID and logs the change.
+
+The location tool requires the separate programmer PIN and no bank/staff session. Wrong PIN, absent/corrupt secrets, blank labels and embedded control characters must leave configuration unchanged. A preconfigured location must not prevent first-run setup. Missing configuration reports **Not configured** until a label is imported; invalid runtime configuration must not deliver a fresh teller OTP. Normal GUI builds exclude the maintenance command.

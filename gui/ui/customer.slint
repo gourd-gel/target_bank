@@ -792,6 +792,7 @@ export component FamilyScreen inherits Rectangle {
                     if Bank.youth-frozen: ActionButton { text: "Unfreeze"; kind: 1; clicked => { Bank.youth-freeze(false); } }
                 }
                 // Move money between your own account and the child's.
+                Text { text: "A 3% processing fee is paid by the account money leaves."; color: Palette.body; font-size: 12px; wrap: word-wrap; }
                 HorizontalLayout {
                     spacing: 12px;
                     move := Field { width: 130px; label: "Move money"; placeholder: Bank.account-currency == "USD" ? "$0.00" : "0.00 " + Bank.account-currency; }

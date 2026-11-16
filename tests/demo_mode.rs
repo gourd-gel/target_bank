@@ -3,6 +3,8 @@
 
 #![cfg(feature = "demo")]
 
+mod common;
+
 use atm::error::AtmError;
 use atm::{Atm, auth};
 use std::path::PathBuf;
@@ -14,6 +16,7 @@ fn new_bank(name: &str) -> (Atm, PathBuf, PathBuf) {
     let dir = std::env::temp_dir().join(format!("atm-demo-mode-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let (db, key) = (dir.join(format!("{name}.db")), dir.join("shared.key"));
+    common::provision(&db);
     (Atm::create(&db, &key).unwrap(), db, key)
 }
 
