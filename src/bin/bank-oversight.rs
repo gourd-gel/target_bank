@@ -25,6 +25,11 @@ const HELP: &str = "Commands (pages start at 0):
   credit <currency> <amount> <reason> record a revenue credit adjustment
   debit <currency> <amount> <reason>  record a revenue debit adjustment
   check                              verify database integrity and reconciliation
+  service-status                     inspect ATM service state
+  retry-service-alert                retry a pending service-lock notification
+  resume-service <review reason>      restore ATM service after Authorities review
+  resolve-customer <card> <reason>    release one customer's PIN lock after review
+  retry-customer-alerts              retry pending customer PIN-lock notifications
   help | quit";
 
 fn output(value: impl serde::Serialize) -> Result<()> {
@@ -59,6 +64,20 @@ fn command(bank: &mut Atm, session: &auth::AuthoritiesSession, line: &str) -> Re
         ["audit", rest @ ..] if rest.len() <= 1 => output(activity(oversight::activity(bank, session, None, None, page(rest.first())?)?)),
         ["ledger", rest @ ..] if rest.len() <= 1 => output(oversight::table(bank, session, "main", "audit_log", page(rest.first())?)?),
         ["admin-audit", rest @ ..] if rest.len() <= 1 => output(atm::administration::recent(bank, session, page(rest.first())?)?),
+        ["service-status"] => {
+            let status = atm::service::authorities_status(bank, session)?;
+            output(json!({"out_of_service": status.out_of_service, "since": status.since, "reason": status.reason}))
+        }
+        ["retry-service-alert"] => output(json!({"delivered": atm::service::authorities_retry_alert(bank, session)?})),
+        ["retry-customer-alerts"] => output(json!({"delivered_count": atm::customer_security::retry_alerts(bank, session)?})),
+        ["resolve-customer", card, reason @ ..] if !reason.is_empty() => {
+            atm::customer_security::resolve(bank, session, card, &reason.join(" "))?;
+            output(json!({"result": "Customer PIN lock resolved"}))
+        }
+        ["resume-service", reason @ ..] if !reason.is_empty() => {
+            atm::service::authorities_resume(bank, session, &reason.join(" "))?;
+            output(json!({"result": "ATM service restored"}))
+        }
         ["fees", rest @ ..] if rest.len() <= 1 => output(oversight::table(bank, session, "processing", "records", page(rest.first())?)?),
         ["account", number, rest @ ..] if rest.len() <= 1 => {
             let accounts = oversight::accounts(bank, session, Some(number), 0)?;

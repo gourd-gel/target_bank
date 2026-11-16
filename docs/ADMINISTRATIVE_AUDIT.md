@@ -26,6 +26,11 @@ recorded as audit fields.
 - Authorities database/schema/table inspections, user/staff/account lookups,
   activity searches, integrity checks, revenue views and adjustments.
 - Reading the administrative audit itself.
+- Authorities customer PIN-lock resolution requests, successful target/review
+  records and notification retry requests.
+- Authorities service-state inspections, notification retry requests, service
+  restoration requests and successful restoration review reasons after a teller
+  sign-in lock.
 - Programmer phone/location changes: PIN authentication result, requested
   operation result and application of valid configuration to a bank.
 - Programmer processing-fee key provisioning and encrypted fee-record reads.

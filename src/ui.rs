@@ -559,7 +559,7 @@ fn admin_menu(atm: &mut Atm, s: &AdminSession) -> Result<()> {
         println!("  1) Create customer account     2) Add joint holder");
         println!("  3) Open youth account          4) Add guardian to youth account");
         println!("  5) View account audit log      6) Set daily limits");
-        println!("  7) Locked cards / unlock       8) Freeze or unfreeze account");
+        println!("  7) Locked cards / Authorities review       8) Freeze or unfreeze account");
         println!("  9) Verify audit log + balances 10) List all accounts");
         println!(" 11) All recent events           12) Close an account ($0 balance)");
         println!(" 13) Change my password          14) Exchange rates and fees");
@@ -899,19 +899,14 @@ fn unlock(atm: &mut Atm, s: &AdminSession) -> Result<()> {
         println!("\n  No locked cards.");
         return Ok(());
     }
-    println!("\n  Locked cards (check the customer's ID matches before unlocking):");
+    println!("\n  Locked cards (refer to Bank Authorities for resolution):");
     for c in &locked {
         println!(
             "  card ending {}  account ending {}  {}  born {}",
             c.card_last4, c.account_last4, c.full_name, c.date_of_birth
         );
     }
-    let card = input::read_line("Card number, from the card the customer hands you (Enter to cancel): ")?;
-    if card.is_empty() {
-        return Ok(());
-    }
-    admin::unlock_card(atm, s, &card)?;
-    println!("\n  Card {} unlocked.", mask(&card));
+    println!("  Bank Authorities must resolve the PIN lock through cargo authorities.");
     Ok(())
 }
 
@@ -941,7 +936,7 @@ fn freeze(atm: &mut Atm, s: &AdminSession) -> Result<()> {
 fn handler_flow(atm: &mut Atm) -> Result<()> {
     if service::out_of_service(atm)? {
         println!(
-            "  The ATM is out of service. Customer and Cash Handler access is paused until a Teller Admin resumes service."
+            "  The ATM is out of service. A teller sign-in security lock requires Bank Authorities to restore service through their terminal."
         );
         return Ok(());
     }

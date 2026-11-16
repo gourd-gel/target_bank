@@ -218,9 +218,9 @@ top.
   find out which cards exist. A made-up card number even says "card locked"
   after 3 tries, just like a real card.
 - **3 wrong PINs in a row lock the card.** A wrong PIN typed at the teller's
-  counter ([4.2](#42-open-an-account)) counts too. A locked card can only be
-  unlocked by a teller inside the branch, after checking photo ID, and at most
-  once a day.
+  counter ([4.2](#42-open-an-account)) and a wrong current PIN during PIN changes
+  count too. Authorities are notified and only Authorities can resolve the
+  persistent lock through `cargo authorities`; see [Customer PIN locks](CUSTOMER_PIN_LOCK.md).
 
 ![Customer menu](screenshots/customer-menu.png)
 
@@ -405,8 +405,13 @@ and nothing is charged.
 2. Type your **Staff ID** and **Password**, then click **Sign in**.
 3. Pick a tab on the left. Click **Sign out** when done.
 
-3 wrong passwords in a row pause sign-in for 60 seconds, doubling with each
-further failure up to 15 minutes.
+3 wrong teller passwords in a row stop ATM booth services and trigger an
+Authorities text notification. The lock survives restarts and requires Bank
+Authorities to sign in through their terminal and run `resume-service <review
+reason>`. Teller phone recovery and the GUI cannot release this lock. See
+[Teller sign-in service lock](TELLER_SERVICE_LOCK.md) for recovery instructions
+and the current text-file notification adapter. Cash Handler password failures
+retain the temporary cooldown policy.
 
 ![Teller Admin console](screenshots/teller-accounts.png)
 
@@ -491,7 +496,7 @@ checks them:
   accepted. Ask them to type it again." Nothing is added. A wrong PIN counts
   toward that card's 3-try lock, just like at the ATM, and is logged.
 - After the 3rd wrong PIN: "The holder's card is locked. Check their ID and
-  unlock it under Locked cards first." ([4.4](#44-locked-cards))
+  ask Bank Authorities to resolve the PIN lock through their terminal." ([4.4](#44-locked-cards))
 - The card and PIN of someone who doesn't hold that account (or isn't a
   guardian of that youth account) are refused, even when the PIN is right.
 - All PIN boxes are emptied after every try, so the holder and the new
@@ -527,19 +532,17 @@ FROZEN, Frozen by guardian, ON HOLD or Closed) and holders.
 
 ### 4.4 Locked cards
 
-1. Click **Locked cards**. Each card locked by 3 wrong PINs is listed by its
-   last 4 digits only ("ending 1234"), with the account's last 4, the
-   holder's name and date of birth.
-2. Check the customer's photo ID against them.
-3. Ask for the card. Type the full number from it in **Card number, from the
-   customer's card** and click **Unlock card**. The notice shows the card as
-   `******1234`.
+The teller's **Locked cards** page shows cards by their last 4 digits, with
+account suffix, holder name and date of birth. It is read-only. Refer the
+customer to Bank Authorities for review; there is no teller unlock button.
 
-A card can be unlocked **once a day** (New York time). If it gets locked
-again the same day, it stays locked until tomorrow. This stops anyone from
-guessing a PIN 3 tries at a time between unlocks.
-
-![Locked cards by last 4 digits; the number is typed from the customer's card](screenshots/locked-cards-unlock.png)
+After three consecutive incorrect PINs, that card cannot sign in even with
+the correct PIN. The lock survives restarts and does not expire tomorrow.
+Authorities sign in using `cargo authorities --directory /path/to/bank`,
+inspect the customer, then run `resolve-customer <card-number> <review reason>`.
+The original PIN remains unchanged. Other customers can continue using the ATM.
+See [Customer PIN-lock recovery](CUSTOMER_PIN_LOCK.md) for full commands,
+alert delivery and retry details.
 
 ### 4.5 Daily limits (bank-wide)
 
@@ -693,7 +696,7 @@ hidden as you type. The same rules and timeouts apply.
 | Role | Options |
 |---|---|
 | Customer | 1 Balance · 2 Daily limits · 3 Withdraw (1 one bill type, 2 mostly one type, 3 fewest bills) · 4 Deposit · 5 Transfer (pick a recent account or type one) · 6 Recent transactions · 7 Family (guardians only; 5 and 6 move money to the child or back) · 8 Change PIN. Other banks' cards see 1-3 only. |
-| Teller Admin | 1 Create customer · 2 Add joint holder · 3 Open youth account · 4 Add guardian · 5 Account audit log · 6 Set daily limits · 7 Locked cards / unlock · 8 Freeze or unfreeze · 9 Verify log + balances · 10 List accounts · 11 All recent events · 12 Close account · 13 Change my password · 14 Exchange rates and fees (set, pause, resume, history; built with `--features online-rates`, 8 checks today's rates and asks to approve) · 15 Register another bank's card · 16 Approve a larger amount for today · 17 Accounts on hold / release · 18 Halt the ATM / resume service · 19 Register teller phone |
+| Teller Admin | 1 Create customer · 2 Add joint holder · 3 Open youth account · 4 Add guardian · 5 Account audit log · 6 Set daily limits · 7 Locked cards / Authorities review · 8 Freeze or unfreeze · 9 Verify log + balances · 10 List accounts · 11 All recent events · 12 Close account · 13 Change my password · 14 Exchange rates and fees (set, pause, resume, history; built with `--features online-rates`, 8 checks today's rates and asks to approve) · 15 Register another bank's card · 16 Approve a larger amount for today · 17 Accounts on hold / release · 18 Halt the ATM / resume service · 19 Register teller phone |
 | Cash Handler | 1 View cash · 2 Restock · 3 Remove bills above the maximum · 4 Reset to maximum · 5 Change my password |
 
 The command line prints a receipt after every transaction (it doesn't ask)
@@ -712,7 +715,7 @@ is locked...".
 ending 5678" with the name and date of birth, then asks for the "Card
 number, from the card the customer hands you".
 
-**Out of service.** Right after sign-in, a red **INTEGRITY CHECK FAILED AT
+**Out of service.** A three-failure teller authentication lock blocks booth sign-in and requires the Authorities terminal commands in [Teller service lock](TELLER_SERVICE_LOCK.md). For ordinary manual/integrity halts, right after sign-in, a red **INTEGRITY CHECK FAILED AT
 SIGN-IN** and/or **ATM OUT OF SERVICE since ...** banner shows what failed,
 then "Customers can't use the ATM. Review, then choose 18 to resume
 service." Option 18 asks "Take the ATM out of service now? Customers will be
@@ -721,7 +724,7 @@ service. Resume service now that you've reviewed it? (y/n)". While out of
 service the main menu shows "OUT OF SERVICE: no cards accepted; Teller Admin
 sign-in only", a customer gets "This ATM is temporarily out of service.
 Please use another ATM." before typing anything, and the Cash Handler gets
-"The ATM is out of service. Customer and Cash Handler access is paused until a Teller Admin resumes service."
+"The ATM is out of service. A teller sign-in security lock requires Bank Authorities to restore service through their terminal."
 
 When a session ends (log out, or the 2-minute timeout noticed at the next
 key), the command line clears the screen and its scrollback, so the next
@@ -733,9 +736,9 @@ person can't read or scroll back to the last one.
 
 | Message | What it means | What to do |
 |---|---|---|
-| "This card is locked. Please see a teller..." | 3 wrong PINs in a row (at the ATM or at the teller's counter), or 3 tries with a card number that doesn't exist | A teller unlocks it after checking ID, once a day at most ([4.4](#44-locked-cards)) |
-| "This ATM is temporarily out of service. Please use another ATM." | A teller halted the ATM, or the integrity check at a Teller Admin sign-in failed. No cards are taken; signed-in customers are stopped too | Customers: use another ATM. Teller: review, then Resume service ([4.1](#41-sign-in-and-out)) |
-| "The ATM is out of service. Customer and Cash Handler access is paused until a Teller Admin resumes service." | The Cash Handler tried to sign in, or was signed in, while the ATM is out of service | Wait until a Teller Admin resumes service |
+| "This card is locked. Please contact Bank Authorities to resolve the PIN lock." | Three incorrect PIN attempts locked the card | Authorities inspect and run `resolve-customer <card-number> <review reason>`; see [Customer PIN locks](CUSTOMER_PIN_LOCK.md) |
+| "This ATM is temporarily out of service. Please use another ATM." | Three incorrect teller credentials, a manual halt, or a failed integrity check stopped service. No cards are taken; signed-in customers are stopped too | Customers: use another ATM. A teller sign-in lock requires Authorities terminal restoration; ordinary halts retain teller review ([4.1](#41-sign-in-and-out)) |
+| "The ATM is out of service. A teller sign-in security lock requires Bank Authorities to restore service through their terminal." | The Cash Handler tried to sign in, or was signed in, while the ATM is out of service | For a teller sign-in lock, contact Bank Authorities; ordinary halts retain teller review |
 | "This account is frozen by the bank. Please see a teller inside the branch." | A teller froze the account (for example, a card reported stolen). Its cards are refused | See a teller with photo ID; only a teller unfreezes it ([4.3](#43-customer-accounts)) |
 | "The holder's account is frozen by the bank, so their card can't confirm this." | Joint holder, Youth account or Add guardian: the current holder's account is frozen by the bank | Unfreeze it first if the holder is who they say they are |
 | "Your session has ended. Please log in again." | Your card was locked or your account closed while you were signed in (or, on the command line, 2 minutes without input) | Insert your card again; see a teller if it is locked |
@@ -750,10 +753,8 @@ person can't read or scroll back to the last one.
 | "Your session ended because of inactivity." | 2 minutes without a tap | Insert your card or sign in again |
 | "Not allowed: a typed rate can move at most 5% in 24 hours..." | A typed rate too far from recent rates | Use Check today's rates, or pause the currency |
 | "The holder's card number or PIN was not accepted. Ask them to type it again." (command line: "Login failed.") | Joint holder, Youth account or Add guardian: the card number or PIN the holder typed is wrong. A wrong PIN counts toward their card's lock | The holder types both again ([4.2](#42-open-an-account)) |
-| "The holder's card is locked. Check their ID and unlock it under Locked cards first." (command line: "This card is locked...") | The holder's card is locked, perhaps by wrong PINs just now | Check their ID and unlock it ([4.4](#44-locked-cards)), then try again. If it was already unlocked today, it stays locked until tomorrow |
+| "The holder's card is locked. Bank Authorities must resolve the PIN lock through their terminal." | The holder card cannot confirm counter actions while locked | Refer to Authorities for resolution ([4.4](#44-locked-cards)) |
 | "Not allowed: the card and PIN must be those of a current holder of this account." (or "... a current guardian of this account.") | The card and PIN were right, but that person doesn't hold that account, or isn't a guardian of that youth account | The account's own holder, or a current guardian, must agree |
-| "Not allowed: this card was already unlocked today; it can be unlocked again tomorrow (New York time)." | One unlock per card per day | Unlock it tomorrow, after checking ID again |
-| "Card not found." (when unlocking) | The number typed isn't a card's full number, for example only the last 4 digits | Type all 10 digits from the customer's card |
 | "Not allowed: the daily withdrawal limit can be at most $5,000.00." (deposit $50,000.00, transfer $25,000.00) | A bank-wide limit above its ceiling | Set a lower limit, or approve more for one customer for today ([4.6](#46-holds-and-approvals)) |
 | "Not allowed: a starting balance can't be more than the daily deposit limit; deposit the rest at the ATM." | A starting balance (or another bank's balance) over the daily deposit limit, counted in US dollars | Open the account with less; the customer deposits the rest |
 | "Not allowed: today's starting balances would pass $20,000; open it with less and deposit the rest at the ATM." | One teller's starting balances today would add up to more than $20,000 (money with no cash behind it) | Open it with less, or with $0, and the customer deposits at the ATM |

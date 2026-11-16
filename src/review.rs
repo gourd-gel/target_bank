@@ -268,7 +268,7 @@ fn holder_names(conn: &Connection, account_id: i64) -> Result<Vec<String>> {
 /// activity with them in person. Logged with the teller's name.
 pub fn release_hold(atm: &mut Atm, session: &AdminSession, account_number: &str) -> Result<()> {
     atm.admit(session)?;
-    let tx = atm.begin()?;
+    let tx = atm.begin_for(session)?;
     let id = db::account_id(&tx, account_number)?;
     if hold_reason(&tx, id)?.is_none() {
         return Err(AtmError::NotAllowed("this account is not on hold"));

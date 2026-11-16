@@ -1,16 +1,20 @@
-//! Out-of-service mode: the ATM stops serving customers until a teller has looked.
+//! Out-of-service mode and Authorities-only release of teller authentication locks.
 //!
 //! STRIDE (Tampering / Repudiation): every Teller Admin sign-in runs the full integrity check
 //! (log chain, balances and cash against the log, signed settings and rates, limits, rates and
 //! account flags against the log). On failure the ATM halts at once: no card is accepted,
 //! customer and Cash Handler sessions stop; Teller Admins can sign in to restore service. A teller can also
-//! halt by hand. Only a Teller Admin can resume, logged with the check's result. Fail closed.
+//! halt by hand. Ordinary halts support teller review; a three-failure teller
+//! authentication lock stops every booth role and only Authorities can release it.
 //!
 //! The state is read from the signed log (newest halt or resume entry): no flag to edit.
 
 use crate::audit::{self, Action, Entry};
 use crate::error::{AtmError, Result};
-use crate::{Atm, auth::AdminSession};
+use crate::{
+    Atm,
+    auth::{AdminSession, AuthoritiesSession},
+};
 use rusqlite::{Connection, OptionalExtension, params};
 
 /// Out-of-service state, for the teller's banner.
@@ -20,6 +24,75 @@ pub struct ServiceStatus {
     /// When and why it was halted (empty while in service).
     pub since: String,
     pub reason: String,
+}
+
+const TELLER_LOCK: &str = "Authorities release required: three failed teller sign-in attempts";
+
+/// A teller authentication incident stops all booth roles until Authorities release it.
+pub(crate) fn teller_locked(conn: &Connection) -> Result<bool> {
+    Ok(halted(conn)?.is_some_and(|(_, reason)| reason.starts_with(TELLER_LOCK)))
+}
+
+pub(crate) fn refuse_teller_lock(conn: &Connection) -> Result<()> {
+    if teller_locked(conn)? { Err(AtmError::OutOfService) } else { Ok(()) }
+}
+
+pub(crate) fn lock_after_teller_failures(conn: &Connection, username: &str, attempts: i64) -> Result<()> {
+    if !teller_locked(conn)? {
+        log(conn, "system", Action::ServiceHalted, &format!("{TELLER_LOCK}; teller admin:{username}"))?;
+        crate::auth::recovery::queue_service_alert(conn, username, attempts)?;
+    }
+    Ok(())
+}
+
+/// Authorities can inspect service state even while booth access is locked.
+pub fn authorities_status(atm: &Atm, session: &AuthoritiesSession) -> Result<ServiceStatus> {
+    crate::administration::access(atm, session, "service_status", "ATM service state")?;
+    let conn = atm.read()?;
+    Ok(match halted(&conn)? {
+        Some((since, reason)) => ServiceStatus { out_of_service: true, since, reason },
+        None => ServiceStatus { out_of_service: false, since: String::new(), reason: String::new() },
+    })
+}
+
+/// Retry the persisted notification without releasing the service lock.
+pub fn authorities_retry_alert(atm: &mut Atm, session: &AuthoritiesSession) -> Result<bool> {
+    crate::administration::access(atm, session, "service_alert_retry", "pending service-lock alert")?;
+    crate::auth::recovery::retry_service_alert(atm)
+}
+
+/// Restore service only after an authenticated Authorities review and a passing integrity check.
+pub fn authorities_resume(atm: &mut Atm, session: &AuthoritiesSession, reason: &str) -> Result<()> {
+    crate::administration::access(
+        atm,
+        session,
+        "service_resume_request",
+        "ATM service restoration requested",
+    )?;
+    let reason = reason.trim();
+    if reason.is_empty() || reason.len() > 500 || reason.chars().any(char::is_control) {
+        return Err(AtmError::InvalidInput(
+            "enter a review reason of 1 to 500 bytes without control characters",
+        ));
+    }
+    atm.admit(session)?;
+    let tx = atm.begin_for(session)?;
+    if halted(&tx)?.is_none() {
+        return Err(AtmError::NotAllowed("the ATM is already in service"));
+    }
+    if problem(&tx)?.is_some() {
+        return Err(AtmError::NotAllowed("resolve the integrity problems before restoring service"));
+    }
+    // Restart the teller's attempt budget after review. Do not alter credentials.
+    tx.execute("UPDATE staff SET failed_attempts = 0, cooldown_until = NULL WHERE role = 'admin'", [])?;
+    log(
+        &tx,
+        "system",
+        Action::ServiceResumed,
+        "Authorities released service after review; integrity check passed",
+    )?;
+    crate::administration::append(&tx, &session.actor(), "service_resume", "succeeded", reason)?;
+    tx.commit()
 }
 
 /// The newest halt, if the newest halt-or-resume entry is a halt: (time, detail).
@@ -95,7 +168,7 @@ pub fn status(atm: &Atm, session: &AdminSession) -> Result<ServiceStatus> {
 /// Take the ATM out of service by hand ("Halt ATM"). Logged.
 pub fn halt(atm: &mut Atm, session: &AdminSession) -> Result<()> {
     atm.admit(session)?;
-    let tx = atm.begin()?;
+    let tx = atm.begin_for(session)?;
     if halted(&tx)?.is_some() {
         return Err(AtmError::NotAllowed("the ATM is already out of service"));
     }
@@ -108,7 +181,8 @@ pub fn halt(atm: &mut Atm, session: &AdminSession) -> Result<()> {
 /// the teller has then resumed knowingly, and the next sign-in halts it again.
 pub fn resume(atm: &mut Atm, session: &AdminSession) -> Result<Option<String>> {
     atm.admit(session)?;
-    let tx = atm.begin()?;
+    let tx = atm.begin_for(session)?;
+    refuse_teller_lock(&tx)?;
     if halted(&tx)?.is_none() {
         return Err(AtmError::NotAllowed("the ATM is already in service"));
     }
@@ -376,6 +450,57 @@ mod tests {
         assert_eq!(resume(&mut atm, &a).unwrap(), None, "the check passes");
         assert!(!status(&atm, &a).unwrap().out_of_service);
         assert!(matches!(resume(&mut atm, &a), Err(AtmError::NotAllowed(_))));
+    }
+
+    #[test]
+    fn expired_or_wrong_bank_authorities_cannot_release_teller_lock() {
+        let mut atm = Atm::in_memory().unwrap();
+        setup(&mut atm);
+        let tx = atm.begin().unwrap();
+        lock_after_teller_failures(&tx, ADMIN.0, 3).unwrap();
+        tx.commit().unwrap();
+        let other = Atm::in_memory().unwrap();
+        let wrong_bank = authorities(&other);
+        assert!(matches!(
+            authorities_resume(&mut atm, &wrong_bank, "reviewed"),
+            Err(AtmError::SessionExpired)
+        ));
+        let expired = authorities(&atm);
+        expired.end();
+        assert!(matches!(authorities_resume(&mut atm, &expired, "reviewed"), Err(AtmError::SessionExpired)));
+        assert!(out_of_service(&atm).unwrap());
+    }
+
+    #[test]
+    fn a_waiting_teller_write_stops_when_security_lock_commits_first() {
+        let dir = std::env::temp_dir().join(format!("atm-teller-lock-race-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (db, key) = (dir.join("atm.db"), dir.join("atm.key"));
+        std::fs::write(&key, [7u8; 32]).unwrap();
+        let mut bank = Atm::create(&db, &key).unwrap();
+        setup(&mut bank);
+        let mut teller_side = Atm::open(&db, &key).unwrap();
+        let teller = auth::login_admin(&mut teller_side, ADMIN.0, ADMIN.1).unwrap();
+        let tx = bank.begin().unwrap();
+        let worker = std::thread::spawn(move || {
+            admin::create_customer(
+                &mut teller_side,
+                &teller,
+                "Ann Lee",
+                "1980-01-01",
+                "4821",
+                Cents::from_dollars(100),
+            )
+        });
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        lock_after_teller_failures(&tx, ADMIN.0, 3).unwrap();
+        tx.commit().unwrap();
+        assert!(matches!(worker.join().unwrap(), Err(AtmError::OutOfService)));
+        let count: i64 =
+            bank.read().unwrap().query_row("SELECT COUNT(*) FROM accounts", [], |r| r.get(0)).unwrap();
+        assert_eq!(count, 0);
+        drop(bank);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

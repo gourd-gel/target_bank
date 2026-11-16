@@ -223,12 +223,6 @@ pub fn connect(app: &Rc<App>, window: &AppWindow) {
     });
 
     let a = app.clone();
-    bank.on_unlock(move |card| {
-        a.touch();
-        a.unlock(card.trim());
-    });
-
-    let a = app.clone();
     bank.on_release_hold(move |account| {
         a.touch();
         a.release_hold(account.trim());
@@ -400,10 +394,19 @@ impl App {
                 }
             }
             // Same message for a wrong ID, wrong password or a pause (no hints to a guesser).
-            Err(AtmError::AuthFailed) => self.error(
-                "Sign-in failed. After 3 failures in a row, sign-in pauses for a while (longer each time).",
-            ),
-            Err(AtmError::OutOfService) => self.error(STAFF_HALTED),
+            Err(AtmError::AuthFailed) if self.out_of_service() => {
+                self.go_welcome(st, STAFF_HALTED);
+                self.error(STAFF_HALTED);
+            }
+            Err(AtmError::AuthFailed) => self.error(if bank.get_staff_role() == ROLE_ADMIN {
+                "Sign-in failed. Three consecutive incorrect teller passwords stop ATM service and require Bank Authorities review."
+            } else {
+                "Sign-in failed. After 3 Cash Handler failures, sign-in pauses temporarily."
+            }),
+            Err(AtmError::OutOfService) => {
+                self.go_welcome(st, STAFF_HALTED);
+                self.error(STAFF_HALTED);
+            }
             Err(e) => self.error(e),
         }
     }
@@ -680,20 +683,6 @@ impl App {
                 self.teller_tab_with(st, tab::ACCOUNTS);
                 self.show_activity_with(st, account, 0);
                 self.notice(text);
-            }
-            Err(e) => self.fail(st, e),
-        }
-    }
-
-    fn unlock(&self, card: &str) {
-        let mut st = self.state();
-        let st = &mut *st;
-        let Some(session) = &st.admin else { return };
-        let done = admin::unlock_card(&mut self.atm(), session, card);
-        match done {
-            Ok(()) => {
-                self.teller_tab_with(st, tab::LOCKED);
-                self.notice(format!("Card {} unlocked. The customer can use their PIN again.", mask(card)));
             }
             Err(e) => self.fail(st, e),
         }
@@ -1061,7 +1050,7 @@ impl App {
             }
             Err(AtmError::CardLocked) if kind != kind::INDIVIDUAL && kind != kind::GUEST => {
                 self.error(
-                    "The holder's card is locked. Check their ID and unlock it under Locked cards first.",
+                    "The holder's card is locked. Bank Authorities must resolve the PIN lock through their terminal.",
                 );
                 false
             }

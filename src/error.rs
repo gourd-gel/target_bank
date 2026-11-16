@@ -14,7 +14,7 @@ pub enum AtmError {
     InvalidInput(&'static str),
     /// Wrong credentials. Never says which part was wrong (no account enumeration).
     AuthFailed,
-    /// Card locked after 3 bad PINs; a Teller Admin must unlock it.
+    /// Card locked after 3 bad PINs; Bank Authorities must resolve it.
     CardLocked,
     /// Session idle too long (or ended for safety). Log in again.
     SessionExpired,
@@ -87,7 +87,7 @@ impl fmt::Display for AtmError {
             AtmError::InvalidInput(msg) => write!(f, "Invalid input: {msg}."),
             AtmError::AuthFailed => write!(f, "Login failed."),
             AtmError::CardLocked => {
-                write!(f, "This card is locked. Please see a teller to have it unlocked.")
+                write!(f, "This card is locked. Please contact Bank Authorities to resolve the PIN lock.")
             }
             AtmError::SessionExpired => write!(f, "Your session has ended. Please log in again."),
             AtmError::AccountFrozen => {

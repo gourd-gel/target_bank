@@ -73,6 +73,7 @@ pub mod audit;
 pub mod auth;
 pub mod cash;
 pub mod customer;
+pub mod customer_security;
 pub mod db;
 #[cfg(feature = "demo")]
 pub mod demo; // sample data; only in `--features demo` builds
@@ -203,6 +204,8 @@ impl Atm {
         auth::recovery::refresh_authorities_configuration(&mut atm)?;
         revenue::migrate(&mut atm)?;
         identity::initialize(&mut atm)?;
+        auth::recovery::retry_service_alert(&mut atm)?;
+        customer_security::retry(&mut atm)?;
         Ok(atm)
     }
 

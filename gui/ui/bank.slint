@@ -246,7 +246,6 @@ export global Bank {
     callback activity-turn(int);
     /// "freeze", "unfreeze", "close".
     callback account-action(string, string);
-    callback unlock(string);
     callback release-hold(string);             // account number
     callback raise-limit(string, int, string); // account number, limit kind, extra dollars
     callback save-limits(string, string, string);

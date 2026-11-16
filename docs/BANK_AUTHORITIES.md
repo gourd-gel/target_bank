@@ -185,9 +185,26 @@ access separately. They use fixed queries, not arbitrary SQL or shell commands.
 
 ```text
 check
+service-status
+retry-service-alert
+resume-service Verified teller identity and reviewed failed sign-ins
+retry-customer-alerts
+resolve-customer 1234567890 Verified customer identity and reviewed PIN attempts
 help
 quit
 ```
+
+Three consecutive incorrect teller credentials lock all booth service until
+Authorities restore it with `resume-service <review reason>`. Teller passwords,
+phone recovery and GUI resume cannot release this security lock. Review the
+incident first; restoration requires passing integrity checks. See
+[Teller sign-in service lock](TELLER_SERVICE_LOCK.md) for alerts, retry behavior
+and the text-file delivery adapter.
+
+Customer PIN locks affect only the identified card. After reviewing the
+customer and incident, use `resolve-customer <card-number> <review reason>`;
+tellers cannot release these locks. See [Customer PIN locks](CUSTOMER_PIN_LOCK.md)
+for sign-in identifiers, alert retries and exact Cargo recovery instructions.
 
 `check` verifies the bank seal, attached fee-record integrity, all attached database
 structures, signed financial chain, balances, cash, settings, revenue and

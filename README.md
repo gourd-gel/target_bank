@@ -155,6 +155,14 @@ the GUI.
 Bank Authorities can inspect databases, trace user/teller activity and check integrity
 from a separate terminal: `cargo authorities --directory /path/to/bank-folder`.
 See [Authorities terminal commands](docs/BANK_AUTHORITIES.md) for sign-in and inspection.
+Three consecutive incorrect teller credentials lock ATM booth services and
+queue an Authorities text alert. Authorities restore service with
+`resume-service <review reason>` after review and a passing integrity check.
+See [Teller service lock](docs/TELLER_SERVICE_LOCK.md) for recovery and delivery details.
+Three incorrect customer PINs lock that card and alert Authorities while other
+customers keep access. Only Authorities can resolve it using
+`resolve-customer <card-number> <review reason>` in their Cargo terminal;
+see [Customer PIN locks](docs/CUSTOMER_PIN_LOCK.md).
 Programmer and Authorities activity is stored separately in `atm.admin-audit.db`,
 readable through Authorities-only APIs. These records can affect the privacy of
 people in those roles; see [Administrative audit privacy](docs/ADMINISTRATIVE_AUDIT.md).
@@ -255,7 +263,7 @@ try by hand.
 - **Cards from other banks** can withdraw and check balance, pay an ATM fee
   and, if in another currency, are converted at the day's rate plus a fee.
   Bank of CCNY accounts are always in US dollars.
-- **Teller Admins** open accounts, unlock cards, freeze or close accounts,
+- **Teller Admins** open accounts, view locked cards, freeze or close accounts,
   set limits and fees, approve rates, release holds, view the signed log and
   run the integrity check. Each Teller sign-in runs that check; if it fails,
   the ATM goes out of service.

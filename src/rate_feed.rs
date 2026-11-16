@@ -139,7 +139,7 @@ fn read_logged(atm: &mut Atm, session: &AdminSession, body: Result<String>) -> R
             usd: None,
             detail: &format!("{why} ({FEED_SOURCE})"),
         };
-        let tx = atm.begin()?;
+        let tx = atm.begin_for(session)?;
         audit::append(&tx, &entry)?;
         tx.commit()?;
     }
@@ -198,7 +198,7 @@ pub fn check(atm: &Atm, session: &AdminSession, feed: &Feed) -> Result<Vec<RateC
 /// nothing is set and the teller checks again. Returns how many were set.
 pub fn approve(atm: &mut Atm, session: &AdminSession, feed: &Feed, shown: &[RateCheck]) -> Result<usize> {
     atm.admit(session)?;
-    let tx = atm.begin()?;
+    let tx = atm.begin_for(session)?;
     let planned = plan(&tx, feed)?;
     if planned.iter().map(|(c, _, _)| c).ne(shown.iter()) {
         return Err(AtmError::NotAllowed("rates changed since you checked them; please check again"));

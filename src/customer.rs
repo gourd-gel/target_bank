@@ -734,9 +734,11 @@ pub fn change_pin(atm: &mut Atm, session: &CustomerSession, current: &str, new: 
         log(Action::LoginFailed, "wrong current PIN while changing PIN")?;
         if locked {
             log(Action::CardLocked, "3 consecutive failed PINs")?;
+            crate::customer_security::queue(&tx, session.card_id(), "customer PIN change")?;
             session.end();
         }
         tx.commit()?;
+        crate::customer_security::retry(atm)?;
         return Err(if locked { AtmError::CardLocked } else { AtmError::AuthFailed });
     }
     if current == new {

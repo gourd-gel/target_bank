@@ -1,3 +1,16 @@
+## Customer PIN-lock alerts and Authorities resolution
+
+- Queue encrypted, durable Authorities alerts for three failed customer PINs at sign-in, during PIN changes or at the teller counter. Include masked identity, ATM origin/time and signature; retry failed delivery through startup/customer access or the Authorities terminal.
+- Restrict PIN-lock resolution to authenticated Authorities through `cargo authorities` and `resolve-customer <card-number> <review reason>`. Keep other customers working, preserve the existing PIN and independent account restrictions, and record Authorities reviews in the private audit.
+- Remove teller GUI unlock controls and disable the teller core unlock API.
+
+## Teller authentication service lock
+
+- Stop all booth roles after three consecutive incorrect teller credentials; preserve the lock across restarts and prevent teller password, phone recovery or GUI resume from bypassing it.
+- Queue a signed Authorities text alert with ATM ID/location and UTC incident time. Retain failed deliveries for startup/staff-sign-in or Authorities-command retry using the existing local text-file adapter.
+- Add Authorities terminal `service-status`, `retry-service-alert` and `resume-service <review reason>`. Require passing integrity checks and record the Authorities review in the private audit.
+- Recheck teller mutations inside the write lock so operations waiting behind a security halt cannot commit.
+
 ## Authorities-only administrative audit
 
 - Record Programmer and Authorities activity in separate encrypted `atm.admin-audit.db` files with append-only/HMAC checks and sealed bank checkpoints. Authorities sessions alone can read decrypted events.

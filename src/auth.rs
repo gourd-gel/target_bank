@@ -245,6 +245,9 @@ pub(crate) trait Session {
     fn stops_when_halted(&self) -> bool {
         false
     }
+    fn stops_for_teller_lock(&self) -> bool {
+        true
+    }
 }
 
 impl Session for CustomerSession {
@@ -307,6 +310,9 @@ impl Session for HandlerSession {
 }
 
 impl Session for AuthoritiesSession {
+    fn stops_for_teller_lock(&self) -> bool {
+        false
+    }
     fn bank(&self) -> u64 {
         self.bank
     }
@@ -337,7 +343,9 @@ impl Atm {
             session.clock().ended.set(true);
             return Err(AtmError::SessionExpired);
         }
-        if session.stops_when_halted() && crate::service::halted(&self.conn)?.is_some() {
+        if (session.stops_when_halted() && crate::service::halted(&self.conn)?.is_some())
+            || (session.stops_for_teller_lock() && crate::service::teller_locked(&self.conn)?)
+        {
             session.clock().ended.set(true);
             return Err(AtmError::OutOfService);
         }
@@ -351,7 +359,9 @@ impl Atm {
         let tx = self.begin()?;
         let refused = if !session.still_allowed(&tx)? {
             Some(AtmError::SessionExpired)
-        } else if session.stops_when_halted() && crate::service::halted(&tx)?.is_some() {
+        } else if (session.stops_when_halted() && crate::service::halted(&tx)?.is_some())
+            || (session.stops_for_teller_lock() && crate::service::teller_locked(&tx)?)
+        {
             Some(AtmError::OutOfService)
         } else {
             None
@@ -444,8 +454,9 @@ type CardRow = (i64, i64, String, Vec<u8>, String, String, i64, bool, bool, bool
 /// Log a customer in. The card number stands in for the physical card
 /// (something you have); the PIN is something you know.
 pub fn login_customer(atm: &mut Atm, card_number: &str, pin: &str) -> Result<CustomerSession> {
+    crate::customer_security::retry(atm)?;
     // Malformed input looks exactly like wrong credentials.
-    if input::validate_number10(card_number).is_err() || input::validate_pin(pin).is_err() {
+    if input::validate_number10(card_number).is_err() {
         burn_time_like_a_real_check();
         return Err(AtmError::AuthFailed);
     }
@@ -517,7 +528,13 @@ pub fn login_customer(atm: &mut Atm, card_number: &str, pin: &str) -> Result<Cus
         return Err(AtmError::CardLocked);
     }
 
-    if verify_secret(pin, &pin_hash, &card_identity(&found_by, account_id, &role)) {
+    let approved = if input::validate_pin(pin).is_ok() {
+        verify_secret(pin, &pin_hash, &card_identity(&found_by, account_id, &role))
+    } else {
+        burn_time_like_a_real_check();
+        false
+    };
+    if approved {
         // "Consecutive": a success resets the count.
         tx.execute("UPDATE cards SET failed_attempts = 0 WHERE id = ?1", params![card_id])?;
         // Frozen by the bank (e.g. a reported stolen card): no card is accepted
@@ -552,9 +569,11 @@ pub fn login_customer(atm: &mut Atm, card_number: &str, pin: &str) -> Result<Cus
     log(&tx, &actor, Action::LoginFailed, Some(account_id), "wrong PIN")?;
     if now_locked {
         log(&tx, "system", Action::CardLocked, Some(account_id), "3 consecutive failed PINs")?;
+        crate::customer_security::queue(&tx, card_id, "customer sign-in")?;
     }
     // Commit BEFORE returning the error; dropping tx would roll back the counter.
     tx.commit()?;
+    crate::customer_security::retry(atm)?;
     Err(if now_locked { AtmError::CardLocked } else { AtmError::AuthFailed })
 }
 
@@ -587,7 +606,7 @@ pub(crate) fn confirm_at_counter(
     teller: &str,
     who: CardAndPin,
 ) -> Result<std::result::Result<Confirmed, AtmError>> {
-    if input::validate_number10(who.card_number).is_err() || input::validate_pin(who.pin).is_err() {
+    if input::validate_number10(who.card_number).is_err() {
         burn_time_like_a_real_check();
         return Ok(Err(AtmError::AuthFailed));
     }
@@ -612,7 +631,13 @@ pub(crate) fn confirm_at_counter(
     if locked {
         return Ok(Err(AtmError::CardLocked));
     }
-    if verify_secret(who.pin, &pin_hash, &card_identity(&found_by, account_id, &role)) {
+    let approved = if input::validate_pin(who.pin).is_ok() {
+        verify_secret(who.pin, &pin_hash, &card_identity(&found_by, account_id, &role))
+    } else {
+        burn_time_like_a_real_check();
+        false
+    };
+    if approved {
         tx.execute("UPDATE cards SET failed_attempts = 0 WHERE id = ?1", params![card_id])?;
         // A card the bank froze can't vouch for anything at the counter either.
         if frozen {
@@ -630,6 +655,7 @@ pub(crate) fn confirm_at_counter(
     log(tx, &actor, Action::LoginFailed, Some(account_id), &format!("wrong PIN at the counter ({teller})"))?;
     if now_locked {
         log(tx, "system", Action::CardLocked, Some(account_id), "3 consecutive failed PINs")?;
+        crate::customer_security::queue(tx, card_id, "holder PIN confirmation at teller counter")?;
     }
     Ok(Err(if now_locked { AtmError::CardLocked } else { AtmError::AuthFailed }))
 }
@@ -662,17 +688,19 @@ fn log(conn: &Connection, actor: &str, action: Action, account: Option<i64>, det
 /// Shared by admin and handler login. The SQL matches on `required_role`, so a
 /// handler's password never opens the admin interface (and vice versa).
 fn login_staff(atm: &mut Atm, username: &str, password: &str, required_role: &str) -> Result<String> {
+    recovery::retry_service_alert(atm)?;
     let well_formed =
         input::validate_username(username).is_ok() && input::validate_password(password).is_ok();
     let now = Utc::now();
     let now_s = now.to_rfc3339_opts(SecondsFormat::Secs, true);
 
     let tx = atm.begin()?;
+    crate::service::refuse_teller_lock(&tx)?;
     // Out of service: only a Teller Admin may sign in (to review and resume).
     if required_role != "admin" {
         crate::service::refuse_if_halted(&tx)?;
     }
-    let stored: Option<(i64, String, i64, Option<String>)> = if well_formed {
+    let stored: Option<(i64, String, i64, Option<String>)> = if input::validate_username(username).is_ok() {
         tx.query_row(
             "SELECT id, password_hash, failed_attempts, cooldown_until
              FROM staff WHERE username = ?1 AND role = ?2",
@@ -684,7 +712,11 @@ fn login_staff(atm: &mut Atm, username: &str, password: &str, required_role: &st
         None
     };
     // Attacker-controlled text stays out of the log unless it passed validation.
-    let actor = if well_formed { format!("{required_role}:{username}") } else { "anonymous".into() };
+    let actor = if input::validate_username(username).is_ok() {
+        format!("{required_role}:{username}")
+    } else {
+        "anonymous".into()
+    };
 
     let Some((id, hash, failed, cooldown)) = stored else {
         burn_time_like_a_real_check();
@@ -701,7 +733,13 @@ fn login_staff(atm: &mut Atm, username: &str, password: &str, required_role: &st
         return Err(AtmError::AuthFailed);
     }
 
-    if verify_secret(password, &hash, &staff_identity(username, required_role)) {
+    let approved = if well_formed {
+        verify_secret(password, &hash, &staff_identity(username, required_role))
+    } else {
+        burn_time_like_a_real_check();
+        false
+    };
+    if approved {
         tx.execute("UPDATE staff SET failed_attempts = 0, cooldown_until = NULL WHERE id = ?1", params![id])?;
         log(&tx, &actor, Action::LoginOk, None, "")?;
         tx.commit()?;
@@ -723,7 +761,11 @@ fn login_staff(atm: &mut Atm, username: &str, password: &str, required_role: &st
         tx.execute("UPDATE staff SET failed_attempts = ?2 WHERE id = ?1", params![id, attempts])?;
         log(&tx, &actor, Action::LoginFailed, None, "wrong password")?;
     }
+    if required_role == "admin" && attempts >= MAX_PIN_ATTEMPTS {
+        crate::service::lock_after_teller_failures(&tx, username, attempts)?;
+    }
     tx.commit()?;
+    recovery::retry_service_alert(atm)?;
     Err(AtmError::AuthFailed)
 }
 
@@ -761,6 +803,10 @@ fn change_staff_password(atm: &mut Atm, username: &str, role: &str, current: &st
     login_staff(atm, username, current, role)?; // logs the check; counts failures
     let hash = hash_secret(new, &staff_identity(username, role))?;
     let tx = atm.begin()?;
+    crate::service::refuse_teller_lock(&tx)?;
+    if role == "handler" {
+        crate::service::refuse_if_halted(&tx)?;
+    }
     tx.execute(
         "UPDATE staff SET password_hash = ?3 WHERE username = ?1 AND role = ?2",
         params![username, role, hash],
@@ -930,7 +976,10 @@ mod tests {
         assert!(matches!(login_customer(&mut conn, &card, "2222"), Err(AtmError::AuthFailed)));
         assert!(matches!(login_customer(&mut conn, &card, "3333"), Err(AtmError::CardLocked)));
         assert!(matches!(login_customer(&mut conn, &card, "4821"), Err(AtmError::CardLocked)));
-        admin::unlock_card(&mut conn, &admin, &card).unwrap();
+        assert!(admin::unlock_card(&mut conn, &admin, &card).is_err());
+        let authority = testing::authorities(&conn);
+        crate::customer_security::resolve(&mut conn, &authority, &card, "Verified customer identity")
+            .unwrap();
         assert!(login_customer(&mut conn, &card, "4821").is_ok());
     }
 
@@ -955,18 +1004,18 @@ mod tests {
     }
 
     #[test]
-    fn staff_cooldown_after_three_failures() {
+    fn handler_cooldown_after_three_failures() {
         let mut conn = crate::Atm::in_memory().unwrap();
         setup(&mut conn);
         for _ in 0..3 {
-            assert!(login_admin(&mut conn, ADMIN.0, "wrong password here").is_err());
+            assert!(login_handler(&mut conn, HANDLER.0, "wrong password here").is_err());
         }
         // Even the right password is refused during cooldown.
-        assert!(login_admin(&mut conn, ADMIN.0, ADMIN.1).is_err());
+        assert!(login_handler(&mut conn, HANDLER.0, HANDLER.1).is_err());
         // The pause runs out (simulated by the bank itself, so re-sealed).
         conn.execute("UPDATE staff SET cooldown_until = '2000-01-01T00:00:00Z'", []).unwrap();
         conn.reseal();
-        assert!(login_admin(&mut conn, ADMIN.0, ADMIN.1).is_ok());
+        assert!(login_handler(&mut conn, HANDLER.0, HANDLER.1).is_ok());
     }
 
     #[test]

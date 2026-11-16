@@ -38,7 +38,8 @@ cover. Every step uses the demo bank, so nothing here needs real data.
 Automated checks in `src/recovery.rs` cover enrollment proof, session checks,
 number validation, single use, expiry, attempt limits, resend throttling,
 encrypted database storage, text-file delivery, generic unknown-phone responses, replacement, password
-cooldown recovery, and the automatic integrity check. No SMS service is used.
+the persistent three-failure teller service lock, Authorities-only terminal
+restoration, and the automatic integrity check. No SMS service is used.
 
 `tests/programmer_tools.rs` checks the maintenance binary with no bank or
 accounts, correct and incorrect programmer PINs, absence of PIN echo,
@@ -86,7 +87,7 @@ Steps that use `sqlite3` need version 3.37 or newer (the tables are STRICT).
 | # | Do | Expect |
 |---|---|---|
 | 1.1 | Sam: wrong PIN twice, then right | Same "login failed" message both times, then the menu |
-| 1.1b | Made-up card number 1234567890, any PIN, three times | "Login failed. Check the card number and PIN." twice, then "This card is locked. Please see a teller to have it unlocked.", exactly like a real card |
+| 1.1b | Made-up card number 1234567890, any PIN, three times | "Login failed. Check the card number and PIN." twice, then "This card is locked. Please contact Bank Authorities to resolve the PIN lock.", exactly like a real card |
 | 1.2 | Lou (locked card): right PIN | "This card is locked", even with the right PIN |
 | 1.3 | Sam: Withdraw, Other amount 7 | Refused: multiples of $5 only |
 | 1.4 | Sam: Withdraw, Other amount 100, tap $5 | Refused: "Not enough of that bill. Available for this amount: $10, $20, $50, $100. You can also choose mixed bills." (the demo machine has 15 or fewer $5s) |
@@ -198,7 +199,7 @@ Staff:
 
 | # | Do | Expect |
 |---|---|---|
-| 7.1 | Teller: wrong password 3 times | Sign-in paused 60 s, doubling after each further failure |
+| 7.1 | Teller: wrong password 3 times | ATM booth service locks persistently; signed Authorities text alert queued/delivered; only authenticated Authorities `resume-service <review reason>` with passing integrity checks restores service |
 | 7.2 | Teller: EUR rate 0.86 to 0.95 | Refused: "a typed rate can move at most 5% in 24 hours" |
 | 7.2b | Teller: EUR 0.90 (+4.7%), then 0.94 | The first works; the second is refused (still more than 5% from 0.86 within 24 hours), so small steps can't add up |
 | 7.3 | Teller: Pause all; Eva withdraws | Refused until resumed |
@@ -225,13 +226,13 @@ At the counter (type card and account numbers from the demo wallet):
 | 7.12 | Teller > Open an account > Joint holder: Existing account number = Sam's account; Current holder's card number = Sam's card, PIN 1111; new holder Max Roe, 1994-02-11, PIN 2716 twice; **Add joint holder** | "The holder's card number or PIN was not accepted. Ask them to type it again." All PIN boxes are emptied; nothing is added |
 | 7.13 | The same with Sam's PIN 9512 (and Max's PIN twice again) | "Done. Card number ... Account number ..." (Sam's account number). Customer accounts: Sam's account is Joint, "Sam Roe (owner); Max Roe (joint)" |
 | 7.14 | Teller > Audit log | "Login failed" for Sam's card: "wrong PIN at the counter (admin:teller)"; "Holder added": "joint holder, card ...; confirmed by card ... with PIN" |
-| 7.15 | Joint holder on Ann's account with Ann's card and PIN 1111, three times (new holder Kim Hale, 1990-07-04, PIN 2716 twice each time) | 1st and 2nd: "not accepted"; 3rd: "The holder's card is locked. Check their ID and unlock it under Locked cards first." |
+| 7.15 | Joint holder on Ann's account with Ann's card and PIN 1111, three times (new holder Kim Hale, 1990-07-04, PIN 2716 twice each time) | 1st and 2nd: "not accepted"; 3rd: "The holder's card is locked. Bank Authorities must resolve the PIN lock through their terminal." |
 | 7.16 | Ann at the ATM with her right PIN 4821 | "This card is locked": wrong PINs at the counter count like the ATM's |
 | 7.17 | Teller > Locked cards | Ann's and Lou's cards, shown only as "ending" + last 4, with the account's last 4, name and date of birth. Clicking a row fills in nothing |
-| 7.18 | Type only the last 4 digits of Ann's card, **Unlock card** | "Card not found." |
-| 7.19 | **Choose** Ann (fills in her full card number), **Unlock card** | "Card ******nnnn unlocked. The customer can use their PIN again." Ann signs in with 4821 |
-| 7.20 | Ann: wrong PIN 3 times at the ATM. Teller: unlock Ann's card again | Refused: "Not allowed: this card was already unlocked today; it can be unlocked again tomorrow (New York time)." |
-| 7.21 | Teller: unlock Lou's card (**Choose** Lou) | Works: the limit is one unlock per card per day |
+| 7.18 | Teller > Locked cards | Read-only list; no teller unlock controls. Core `admin::unlock_card` refuses teller requests |
+| 7.19 | Authorities: authenticate with `cargo authorities`, inspect Ann, then `resolve-customer <Ann-card> Verified customer identity` | Ann can sign in with her original PIN; private administrative audit records the Authorities actor and review |
+| 7.20 | Ann: three incorrect PINs again; restart ATM; attempt her correct PIN | Remains locked until Authorities resolve it again; other customers can sign in |
+| 7.21 | Obstruct Authorities alert delivery, lock Lou with three PIN failures, restore destination and restart | Lock commits despite delivery failure; queued alert is retried with ATM origin/signature; delivery does not unlock Lou |
 
 Out of service:
 
@@ -319,8 +320,7 @@ and changing nothing; the six hold rules, release and "counting restarts";
 guardian moves only to the guardian's own account, and held by the same
 rules; the bank's freeze and the guardian's freeze each lifted only by their
 own side, and the bank's refusing the card; joint holder, youth
-account and new guardian needing the holder's own card and PIN; one unlock
-per card per day; recent payees (newest first, no repeats, at most 5, not a
+account and new guardian needing the holder's own card and PIN; Authorities-only customer PIN-lock resolution; recent payees (newest first, no repeats, at most 5, not a
 guardian's moves); numbers, names and birth dates encrypted at rest and
 swapped ciphertext detected; the log naming cards only by id and last 4; a
 PIN or password hash working only for its own card or login; the database
@@ -400,3 +400,14 @@ Run `cargo authorities --directory /path/to/bank-folder` outside the booth GUI a
 ## Private administrative audit
 
 Verify Programmer configuration authentication/results and fee-tool activity are recorded before/after bank creation, and Authorities code requests, sign-ins/failures, sign-outs, inspections and revenue actions are recorded in the separate encrypted administrative database. Only a live same-bank Authorities session may read decrypted records; ordinary GUI roles and expired/cross-bank sessions must fail. Verify append-only behavior, ciphertext at rest, no credential values, atomic rollback with bank state, missing key/store refusal and rollback checkpoint checks. Confirm GUI/business audit records remain unchanged by administrative activity. Check documentation explicitly states the privacy impact for people acting as Programmer or Bank Authorities and includes `admin-audit` inspection commands.
+
+## Customer PIN-lock and Authorities recovery checks
+
+`customer_security` unit tests cover per-card isolation, existing-session denial,
+malformed PIN counting, teller refusal, expired/wrong-bank Authorities sessions,
+review validation, unchanged PINs and independent freezes, and distinct encrypted
+pending incidents from PIN changes. The recovery test authenticates the alert's
+complete-body HMAC and verifies that an existing Authorities OTP is unchanged.
+`tests/customer_pin_lock.rs` exercises failed delivery, restart/retry, the locked
+customer's correct-PIN denial, other-customer access, and actual Authorities
+terminal resolution with private review logging. See [Customer PIN locks](CUSTOMER_PIN_LOCK.md).

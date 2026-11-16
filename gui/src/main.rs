@@ -71,7 +71,7 @@ const IDLE_LOGIN: Duration = Duration::from_secs(60);
 /// How often the welcome screen re-reads whether the ATM is out of service.
 const SERVICE_CHECK: Duration = Duration::from_secs(5);
 /// Shown when a Cash Handler tries to sign in while the ATM is out of service.
-pub const STAFF_HALTED: &str = "The ATM is out of service. Customer and Cash Handler access is paused until a Teller Admin resumes service.";
+pub const STAFF_HALTED: &str = "The ATM is out of service. A teller sign-in security lock requires Bank Authorities to restore service through their terminal.";
 
 /// What the keypad entry screen is collecting right now.
 #[derive(Clone, Copy, PartialEq, Eq)]

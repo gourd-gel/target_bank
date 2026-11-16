@@ -5,14 +5,14 @@
 //! Least privilege: NO function here edits a balance, reads/changes a PIN, or
 //! touches the audit log. That limits what a stolen admin password is worth.
 
+use crate::Atm;
 use crate::audit::{self, Action, Entry, IntegrityReport, Row};
-use crate::auth::{self, AdminSession, CardAndPin, Confirmed};
+use crate::auth::{self, AdminSession, CardAndPin};
 use crate::db::{self, CASH_MAXIMUM, Limit, Number};
 use crate::error::{AtmError, Result};
 use crate::fx::{self, Currency};
 use crate::input::{self, ADULT_AGE};
 use crate::money::Cents;
-use crate::{Atm, Tx};
 use chrono::{NaiveDate, Utc};
 use chrono_tz::America::New_York;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
@@ -32,9 +32,8 @@ pub struct NewCard {
     pub card_number: String,    // logs in (with the PIN)
 }
 
-/// A locked card, with what a teller needs to check ID before unlocking.
-/// Last 4 digits only: the teller unlocks with the card the customer hands
-/// over, and never sees full numbers they could try at the ATM themselves.
+/// A locked card for teller identification and referral to Authorities.
+/// Last 4 digits only; tellers cannot resolve the PIN lock.
 #[derive(Debug, Clone)]
 pub struct LockedCard {
     pub card_last4: String,
@@ -283,7 +282,7 @@ fn open_adult_account(
             ("guest", "guest", "guest card from another bank (simulated network), balance there")
         }
     };
-    let tx = atm.begin()?;
+    let tx = atm.begin_for(session)?;
     let (account_id, account_number, usd) =
         insert_account(&tx, session, account_kind, currency, starting_balance)?;
     let (_, card_number) = insert_card(&tx, account_id, role, holder.full_name, dob, holder.pin)?;
@@ -314,10 +313,17 @@ pub fn add_joint_holder(
     if age < ADULT_AGE {
         return Err(AtmError::NotAllowed("joint account holders must be 18 or older"));
     }
-    let tx = atm.begin()?;
+    let tx = atm.begin_for(session)?;
     let account_id = db::account_id(&tx, account_number)?;
     let holder_card = holder.card_number;
-    let (tx, holder) = confirmed(tx, session, holder)?;
+    let holder = match auth::confirm_at_counter(&tx, &session.actor(), holder)? {
+        Ok(holder) => holder,
+        Err(refused) => {
+            tx.commit()?;
+            crate::customer_security::retry(atm)?;
+            return Err(refused);
+        }
+    };
     if holder.account_id != account_id || !matches!(holder.role.as_str(), "owner" | "joint") {
         return Err(AtmError::NotAllowed(
             "the card and PIN must be those of a current holder of this account",
@@ -373,8 +379,15 @@ pub fn open_youth_account(
         return Err(AtmError::NotAllowed("youth accounts are for customers under 18"));
     }
     let guardian_card_number = guardian.card_number;
-    let tx = atm.begin()?;
-    let (tx, _) = confirmed(tx, session, guardian)?;
+    let tx = atm.begin_for(session)?;
+    let _ = match auth::confirm_at_counter(&tx, &session.actor(), guardian)? {
+        Ok(holder) => holder,
+        Err(refused) => {
+            tx.commit()?;
+            crate::customer_security::retry(atm)?;
+            return Err(refused);
+        }
+    };
     let guardian_card = adult_card(&tx, guardian_card_number)?;
     let (account_id, account_number, usd) =
         insert_account(&tx, session, "youth", Currency::Usd, starting_balance)?;
@@ -413,14 +426,21 @@ pub fn add_guardian(
 ) -> Result<()> {
     atm.admit(session)?;
     let current_card = current_guardian.card_number;
-    let tx = atm.begin()?;
+    let tx = atm.begin_for(session)?;
     let account_id = db::account_id(&tx, youth_account_number)?;
     let kind: String =
         tx.query_row("SELECT kind FROM accounts WHERE id = ?1", params![account_id], |r| r.get(0))?;
     if kind != "youth" {
         return Err(AtmError::NotAllowed("guardians can only be added to youth accounts"));
     }
-    let (tx, current) = confirmed(tx, session, current_guardian)?;
+    let current = match auth::confirm_at_counter(&tx, &session.actor(), current_guardian)? {
+        Ok(holder) => holder,
+        Err(refused) => {
+            tx.commit()?;
+            crate::customer_security::retry(atm)?;
+            return Err(refused);
+        }
+    };
     let is_guardian: bool = tx.query_row(
         "SELECT EXISTS (SELECT 1 FROM guardians WHERE youth_account_id = ?1 AND guardian_card_id = ?2)",
         params![account_id, current.card_id],
@@ -453,18 +473,6 @@ pub fn add_guardian(
     )?;
     tx.commit()?;
     Ok(())
-}
-
-/// A holder confirms at the counter with card + PIN (see `auth::confirm_at_counter`).
-/// A refusal is committed first, so a wrong PIN counts toward the lock.
-fn confirmed<'a>(tx: Tx<'a>, session: &AdminSession, who: CardAndPin) -> Result<(Tx<'a>, Confirmed)> {
-    match auth::confirm_at_counter(&tx, &session.actor(), who)? {
-        Ok(holder) => Ok((tx, holder)),
-        Err(refused) => {
-            tx.commit()?;
-            Err(refused)
-        }
-    }
 }
 
 /// A Bank of CCNY card that belongs to an adult (18+), not a youth or guest card.
@@ -513,7 +521,7 @@ pub fn set_limit(atm: &mut Atm, session: &AdminSession, limit: Limit, new_value:
             Limit::Transfer => "the daily transfer limit can be at most $25,000.00",
         }));
     }
-    let tx = atm.begin()?;
+    let tx = atm.begin_for(session)?;
     let old_value = db::get_limit(&tx, limit)?;
     db::set_limit(&tx, limit, new_value)?;
     log(
@@ -545,7 +553,7 @@ pub fn raise_limit_today(
     if extra.is_zero() {
         return Err(AtmError::InvalidInput("enter an amount more than zero"));
     }
-    let tx = atm.begin()?;
+    let tx = atm.begin_for(session)?;
     let id = db::account_id(&tx, account_number)?;
     let kind: String = tx.query_row("SELECT kind FROM accounts WHERE id = ?1", params![id], |r| r.get(0))?;
     if kind == "youth" {
@@ -579,7 +587,7 @@ pub fn raise_limit_today(
     Ok(())
 }
 
-/// Cards locked by 3 bad PINs, with name and DOB so the teller can check ID first.
+/// Cards locked by 3 bad PINs, with identification for Authorities referral.
 pub fn locked_cards(atm: &Atm, session: &AdminSession) -> Result<Vec<LockedCard>> {
     let conn = &atm.read()?;
     atm.admit(session)?;
@@ -602,36 +610,13 @@ pub fn locked_cards(atm: &Atm, session: &AdminSession) -> Result<Vec<LockedCard>
     Ok(out)
 }
 
-/// Spec: unlock a card locked by failed PIN attempts. The customer hands
-/// over the card at the counter (its number is typed from it).
-/// At most once per card per bank day, counted from the signed log: 3 wrong
-/// PINs, unlock, 3 more... would otherwise let a teller (or a friend of the
-/// customer) keep guessing (STRIDE: Spoofing).
-pub fn unlock_card(atm: &mut Atm, session: &AdminSession, card_number: &str) -> Result<()> {
+/// Teller unlocking is disabled. Authorities resolve PIN locks through
+/// `customer_security::resolve` and the separate Authorities terminal.
+pub fn unlock_card(atm: &mut Atm, session: &AdminSession, _card_number: &str) -> Result<()> {
     atm.admit(session)?;
-    let tx = atm.begin()?;
-    let (card_id, account_id, _, _) = card_ids(&tx, card_number)?;
-    let locked: bool =
-        tx.query_row("SELECT locked FROM cards WHERE id = ?1", params![card_id], |r| r.get(0))?;
-    if !locked {
-        return Err(AtmError::InvalidInput("that card is not locked"));
-    }
-    let card = db::card_ref(card_id, db::last4(card_number));
-    let unlocked_today: bool = tx.query_row(
-        "SELECT EXISTS (SELECT 1 FROM audit_log
-                        WHERE action = ?1 AND account_id = ?2 AND detail = ?3 AND ts >= ?4)",
-        params![Action::CardUnlocked.as_str(), account_id, card, audit::bank_day_start_utc()?],
-        |r| r.get(0),
-    )?;
-    if unlocked_today {
-        return Err(AtmError::NotAllowed(
-            "this card was already unlocked today; it can be unlocked again tomorrow (New York time)",
-        ));
-    }
-    tx.execute("UPDATE cards SET locked = 0, failed_attempts = 0 WHERE id = ?1", params![card_id])?;
-    log(&tx, session, Action::CardUnlocked, Some(account_id), None, &card)?;
-    tx.commit()?;
-    Ok(())
+    Err(AtmError::NotAllowed(
+        "only Bank Authorities can resolve customer PIN locks through cargo authorities",
+    ))
 }
 
 /// Freeze/unfreeze an account (fraud response, e.g. a reported stolen card).
@@ -642,7 +627,7 @@ pub fn unlock_card(atm: &mut Atm, session: &AdminSession, card_number: &str) -> 
 /// can't lift it, and a guardian can't lift this one.
 pub fn set_frozen(atm: &mut Atm, session: &AdminSession, account_number: &str, frozen: bool) -> Result<()> {
     atm.admit(session)?;
-    let tx = atm.begin()?;
+    let tx = atm.begin_for(session)?;
     let id = db::account_id(&tx, account_number)?;
     let (bank, guardian): (bool, bool) =
         tx.query_row("SELECT frozen, guardian_frozen FROM accounts WHERE id = ?1", params![id], |r| {
@@ -665,7 +650,7 @@ pub fn set_frozen(atm: &mut Atm, session: &AdminSession, account_number: &str, f
 /// number is never reused (fresh_number checks closed accounts too).
 pub fn close_account(atm: &mut Atm, session: &AdminSession, account_number: &str) -> Result<()> {
     atm.admit(session)?;
-    let tx = atm.begin()?;
+    let tx = atm.begin_for(session)?;
     let id = db::account_id(&tx, account_number)?;
     let balance: i64 =
         tx.query_row("SELECT balance_cents FROM accounts WHERE id = ?1", params![id], |r| r.get(0))?;
@@ -781,7 +766,7 @@ pub fn bank_limits(atm: &Atm, session: &AdminSession) -> Result<Vec<(Limit, Cent
 /// (The database seal was already checked when the transaction opened.)
 pub fn verify_integrity(atm: &mut Atm, session: &AdminSession) -> Result<IntegrityReport> {
     atm.admit(session)?;
-    let tx = atm.begin()?;
+    let tx = atm.begin_for(session)?;
     let report = audit::verify(&tx)?;
     log(
         &tx,
@@ -859,7 +844,15 @@ mod tests {
             auth::login_customer(&mut conn, &ann.card_number, "4821"),
             Err(AtmError::CardLocked)
         ));
-        unlock_card(&mut conn, &admin, &ann.card_number).unwrap();
+        assert!(unlock_card(&mut conn, &admin, &ann.card_number).is_err());
+        let authority = crate::auth::testing::authorities(&conn);
+        crate::customer_security::resolve(
+            &mut conn,
+            &authority,
+            &ann.card_number,
+            "Verified customer identity",
+        )
+        .unwrap();
         assert!(add(&mut conn, &ann.card_number, "4821").is_ok());
         // A youth account needs the guardian's own PIN.
         let sam_guess = CardAndPin { card_number: &sam.card_number, pin: "0000" };
@@ -1013,7 +1006,15 @@ mod tests {
         for _ in 0..3 {
             let _ = auth::login_customer(&mut conn, &kid.card_number, "9999");
         }
-        unlock_card(&mut conn, &admin, &kid.card_number).unwrap();
+        assert!(unlock_card(&mut conn, &admin, &kid.card_number).is_err());
+        let authority = crate::auth::testing::authorities(&conn);
+        crate::customer_security::resolve(
+            &mut conn,
+            &authority,
+            &kid.card_number,
+            "Verified customer identity",
+        )
+        .unwrap();
         let s = auth::login_customer(&mut conn, &pat.card_number, "4821").unwrap();
         crate::customer::transfer(&mut conn, &s, &sue.account_number, usd(1)).unwrap();
         let log: String = conn
@@ -1100,7 +1101,7 @@ mod tests {
     }
 
     #[test]
-    fn locked_cards_are_listed_for_id_check_and_unlock_needs_a_locked_card() {
+    fn locked_cards_are_listed_but_only_authorities_can_resolve_them() {
         let mut conn = crate::Atm::in_memory().unwrap();
         let (admin, _) = setup(&mut conn);
         let a = create_customer(&mut conn, &admin, "Ann Lee", "1990-01-01", "4821", usd(10)).unwrap();
@@ -1113,9 +1114,17 @@ mod tests {
         assert_eq!(locked[0].full_name, "Ann Lee");
         assert_eq!(locked[0].card_last4, db::last4(&a.card_number));
         assert!(!format!("{locked:?}").contains(&a.card_number), "the list shows a full card number");
-        unlock_card(&mut conn, &admin, &a.card_number).unwrap();
+        assert!(unlock_card(&mut conn, &admin, &a.card_number).is_err());
+        let authority = crate::auth::testing::authorities(&conn);
+        crate::customer_security::resolve(
+            &mut conn,
+            &authority,
+            &a.card_number,
+            "Verified customer identity",
+        )
+        .unwrap();
         assert!(locked_cards(&conn, &admin).unwrap().is_empty());
-        // Locked again the same day: no second unlock until tomorrow.
+        // A renewed lock still cannot be released by a teller.
         for _ in 0..3 {
             let _ = auth::login_customer(&mut conn, &a.card_number, "9999");
         }

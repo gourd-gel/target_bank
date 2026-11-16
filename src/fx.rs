@@ -808,7 +808,7 @@ pub fn set_fee_rule(
         .filter(|m| *m <= MAX_FEE_MINIMUM)
         .ok_or(AtmError::InvalidInput("enter a minimum fee from $0 to $10, like 3 or 2.50"))?;
     let new = FeeRule { percent_bp, minimum };
-    let tx = atm.begin()?;
+    let tx = atm.begin_for(session)?;
     let old = fee_rule_of(&tx, fee)?;
     let (percent_key, minimum_key) = fee.keys();
     db::put_setting(&tx, percent_key, new.percent_bp)?;
@@ -850,7 +850,7 @@ pub fn set_paused(
     paused: bool,
 ) -> Result<()> {
     atm.admit(session)?;
-    let tx = atm.begin()?;
+    let tx = atm.begin_for(session)?;
     let targets: Vec<Currency> = match currency {
         Some(Currency::Usd) => return Err(AtmError::InvalidInput("the US dollar has no exchange rate")),
         Some(c) => vec![c],
@@ -907,7 +907,7 @@ pub fn set_rate(atm: &mut Atm, session: &AdminSession, currency: Currency, per_u
     if !(low..=high).contains(&micros) {
         return Err(AtmError::InvalidInput("that rate is outside the believable range for this currency"));
     }
-    let tx = atm.begin()?;
+    let tx = atm.begin_for(session)?;
     check_change_cap(&tx, currency, micros)?;
     store_rate(&tx, session, currency, micros, "", false)?;
     tx.commit()?;

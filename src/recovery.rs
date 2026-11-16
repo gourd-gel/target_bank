@@ -66,6 +66,78 @@ fn save(conn: &Connection, username: &str, record: &Record) -> Result<()> {
 }
 
 const AUTHORITIES: &str = "bank authorities";
+const SERVICE_ALERT: &str = "pending-teller-service-alert/v1";
+#[derive(Serialize, Deserialize)]
+struct ServiceAlert {
+    username: String,
+    attempts: i64,
+    timestamp: String,
+}
+
+pub(crate) fn queue_service_alert(conn: &Connection, username: &str, attempts: i64) -> Result<()> {
+    let alert = ServiceAlert { username: username.into(), attempts, timestamp: audit::now_utc() };
+    let clear =
+        serde_json::to_string(&alert).map_err(|_| AtmError::Internal("service alert encoding".into()))?;
+    let sealed = keys::seal("service.alert", SERVICE_ALERT, &clear)?;
+    let encoded =
+        serde_json::to_string(&sealed).map_err(|_| AtmError::Internal("service alert encoding".into()))?;
+    conn.execute(
+        "INSERT INTO meta(key,value) VALUES (?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        params![SERVICE_ALERT, encoded],
+    )?;
+    Ok(())
+}
+
+pub(crate) fn service_alert_pending(conn: &Connection) -> Result<bool> {
+    Ok(conn.query_row("SELECT EXISTS(SELECT 1 FROM meta WHERE key=?1)", [SERVICE_ALERT], |r| r.get(0))?)
+}
+
+/// Failed text delivery must never roll back the service lock. The encrypted
+/// pending alert survives restart and is removed only after successful delivery.
+pub(crate) fn retry_service_alert(atm: &mut Atm) -> Result<bool> {
+    if !service_alert_pending(&*atm.read()?)? {
+        return Ok(false);
+    }
+    let bank_id = atm.id;
+    let tx = atm.begin()?;
+    let stored: Option<String> =
+        tx.query_row("SELECT value FROM meta WHERE key=?1", [SERVICE_ALERT], |r| r.get(0)).optional()?;
+    let Some(stored) = stored else { return Ok(false) };
+    let sealed: Vec<u8> =
+        serde_json::from_str(&stored).map_err(|_| AtmError::RecordTampered("service alert"))?;
+    let clear = keys::unseal("service.alert", SERVICE_ALERT, &sealed)?;
+    let alert: ServiceAlert =
+        serde_json::from_str(&clear).map_err(|_| AtmError::RecordTampered("service alert"))?;
+    let delivered = (|| -> Result<()> {
+        apply_authorities_configuration(&tx, bank_id)?;
+        let phone = staff_phone(&tx, AUTHORITIES)?.ok_or(AtmError::NotAllowed("Bank Authorities phone is not configured"))?;
+        let path = code_path(&tx, bank_id, &phone);
+        if tx.path().is_none_or(|p| p.is_empty()) {
+            std::fs::create_dir_all(path.parent().ok_or_else(|| AtmError::Internal("authority file path".into()))?)
+                .map_err(|_| AtmError::NotAllowed("could not create the bank authorities notification folder"))?;
+        }
+        let origin = crate::identity::origin(&tx, bank_id)?;
+        let body = format!("Alert! ATM services stopped after {} consecutive incorrect teller sign-in credentials.\nTeller account: admin:{}\nATM ID: {}\nATM location: {}\nIncident time (UTC): {}\nAlert time (UTC): {}\nAuthorities action required: sign in with cargo authorities, run check, then resume-service <review reason>.", alert.attempts, alert.username, origin.id, origin.location, alert.timestamp, audit::now_utc());
+        let signature = keys::alert_signature(&body)?;
+        deliver(&path, &format!("{body}\nATM signature (HMAC-SHA256): {signature}"))
+    })().is_ok();
+    if delivered {
+        tx.execute("DELETE FROM meta WHERE key=?1", [SERVICE_ALERT])?;
+    }
+    log(
+        &tx,
+        "system",
+        Action::ControlsChanged,
+        None,
+        if delivered {
+            "teller service-lock alert delivered to Authorities"
+        } else {
+            "teller service-lock alert delivery failed; retained for retry"
+        },
+    )?;
+    tx.commit()?;
+    Ok(delivered)
+}
 pub const ALERT_HEADER: &str = "Alert! A teller has failed to bypass PIN verification and is attempting phone verification. Please verify the phone number. The requested text sent to them: ";
 
 /// Create a notification account with no admin or cash-handler permissions.
@@ -307,6 +379,36 @@ fn notify_authorities(conn: &Connection, bank_id: u64, requested_phone: &str, te
     deliver(&path, &format!("{body}\nATM signature (HMAC-SHA256): {signature}"))
 }
 
+pub(crate) fn deliver_customer_alert(
+    conn: &Connection,
+    bank_id: u64,
+    text: &str,
+    card_id: i64,
+    reference: i64,
+) -> Result<()> {
+    apply_authorities_configuration(conn, bank_id)?;
+    let phone = staff_phone(conn, AUTHORITIES)?
+        .ok_or(AtmError::NotAllowed("Bank Authorities phone is not configured"))?;
+    let path = code_path(conn, bank_id, &phone);
+    if conn.path().is_none_or(|p| p.is_empty()) {
+        std::fs::create_dir_all(
+            path.parent().ok_or_else(|| AtmError::Internal("authority file path".into()))?,
+        )
+        .map_err(|_| AtmError::NotAllowed("could not create the bank authorities notification folder"))?;
+    }
+    let origin = crate::identity::origin(conn, bank_id)?;
+    let body = format!(
+        "{text}\nATM ID: {}\nATM location: {}\nAlert time (UTC): {}",
+        origin.id,
+        origin.location,
+        audit::now_utc()
+    );
+    let signature = keys::alert_signature(&body)?;
+    let message = format!("{body}\nATM signature (HMAC-SHA256): {signature}");
+    deliver(&path.with_file_name(format!("{phone}.customer-lock.{card_id}.{reference}.txt")), &message)?;
+    deliver(&path, &message)
+}
+
 /// Begin enrollment while signed in. Current password is required, and the
 /// phone becomes usable for recovery only after its code has been confirmed.
 pub fn enroll(atm: &mut Atm, session: &AdminSession, current_password: &str, phone: &str) -> Result<String> {
@@ -361,6 +463,7 @@ pub fn request_code(atm: &mut Atm, phone: &str) -> Result<String> {
     let bank_id = atm.id;
     let parsed = phone_number(phone);
     let tx = atm.begin()?;
+    crate::service::refuse_teller_lock(&tx)?;
     let phone = match parsed {
         Ok(phone) => phone,
         Err(_) => {
@@ -416,6 +519,7 @@ pub fn request_code(atm: &mut Atm, phone: &str) -> Result<String> {
 pub fn login(atm: &mut Atm, phone: &str, code: &str) -> Result<AdminSession> {
     let phone = phone_number(phone).map_err(|_| AtmError::AuthFailed)?;
     let tx = atm.begin()?;
+    crate::service::refuse_teller_lock(&tx)?;
     let Some((username, mut record)) = find_phone(&tx, &phone)? else {
         log(&tx, "anonymous", Action::LoginFailed, None, "phone recovery rejected")?;
         tx.commit()?;
@@ -657,6 +761,93 @@ mod tests {
     }
 
     #[test]
+    fn customer_pin_lock_alert_has_authenticated_origin_and_keeps_authorities_code_separate() {
+        let (mut atm, teller) = bank();
+        let card = crate::admin::create_customer(
+            &mut atm,
+            &teller,
+            "Ann Lee",
+            "1980-01-01",
+            "4821",
+            crate::money::Cents::from_dollars(100),
+        )
+        .unwrap();
+        request_authorities_code(&mut atm, "+12125550199").unwrap();
+        let otp_path = code_path(&atm.conn, atm.id, "+12125550199").with_extension("authorities-login.txt");
+        let otp = std::fs::read_to_string(&otp_path).unwrap();
+        for _ in 0..3 {
+            assert!(super::super::login_customer(&mut atm, &card.card_number, "1111").is_err());
+        }
+        let alert = std::fs::read_to_string(code_path(&atm.conn, atm.id, "+12125550199")).unwrap();
+        assert!(alert.contains("Customer login locked"));
+        assert!(alert.contains("Customer actor:"));
+        assert!(alert.contains("ATM location: Not configured"));
+        assert!(!alert.contains(&card.card_number));
+        assert_alert_signature(&alert);
+        assert_eq!(std::fs::read_to_string(otp_path).unwrap(), otp);
+    }
+
+    #[test]
+    fn third_teller_failure_stops_live_booth_sessions_and_sends_signed_origin_alert() {
+        use crate::money::Cents;
+        use crate::{admin, cash, customer, service};
+        let (mut atm, teller) = bank();
+        let handler = super::super::login_handler(&mut atm, testing::HANDLER.0, testing::HANDLER.1).unwrap();
+        let card = admin::create_customer(
+            &mut atm,
+            &teller,
+            "Ann Lee",
+            "1980-01-01",
+            "4821",
+            Cents::from_dollars(100),
+        )
+        .unwrap();
+        let customer = super::super::login_customer(&mut atm, &card.card_number, "4821").unwrap();
+        // A successful sign-in resets the consecutive-failure budget.
+        for _ in 0..2 {
+            assert!(super::super::login_admin(&mut atm, ADMIN.0, "bad").is_err());
+        }
+        assert!(!service::out_of_service(&atm).unwrap());
+        super::super::login_admin(&mut atm, ADMIN.0, ADMIN.1).unwrap();
+        for _ in 0..2 {
+            assert!(super::super::login_admin(&mut atm, ADMIN.0, "wrong password").is_err());
+        }
+        assert!(!service::out_of_service(&atm).unwrap());
+        assert!(super::super::login_admin(&mut atm, ADMIN.0, "bad").is_err());
+        assert!(service::out_of_service(&atm).unwrap());
+        assert!(matches!(customer::balance(&atm, &customer), Err(AtmError::OutOfService)));
+        assert!(matches!(cash::view(&atm, &handler), Err(AtmError::OutOfService)));
+        assert!(matches!(admin::list_accounts(&atm, &teller), Err(AtmError::OutOfService)));
+        assert!(matches!(service::resume(&mut atm, &teller), Err(AtmError::OutOfService)));
+        let alert = std::fs::read_to_string(code_path(&atm.conn, atm.id, "+12125550199")).unwrap();
+        for field in [
+            "3 consecutive",
+            "Teller account: admin:",
+            "ATM ID:",
+            "ATM location:",
+            "Incident time (UTC):",
+            "resume-service",
+        ] {
+            assert!(alert.contains(field), "missing {field}: {alert}");
+        }
+        assert!(!alert.contains(ADMIN.1));
+        assert_alert_signature(&alert);
+        assert!(!service_alert_pending(&atm.conn).unwrap());
+        let authority = testing::authorities(&atm);
+        assert!(service::authorities_status(&atm, &authority).unwrap().out_of_service);
+        assert!(service::authorities_resume(&mut atm, &authority, " ").is_err());
+        service::authorities_resume(&mut atm, &authority, "Verified teller identity and reviewed incident")
+            .unwrap();
+        assert!(!service::out_of_service(&atm).unwrap());
+        assert!(super::super::login_admin(&mut atm, ADMIN.0, ADMIN.1).is_ok());
+        let rows = crate::administration::recent(&atm, &authority, 0).unwrap();
+        assert!(
+            rows.iter()
+                .any(|r| r.event.action == "service_resume" && r.event.details.contains("Verified teller"))
+        );
+    }
+
+    #[test]
     fn authorities_phone_login_is_single_use_and_never_grants_teller_access() {
         let (mut atm, _) = registered();
         let phone = "+12125550199";
@@ -821,7 +1012,7 @@ mod tests {
     }
 
     #[test]
-    fn recovery_runs_integrity_check_even_after_password_cooldown() {
+    fn recovery_cannot_bypass_teller_lock_or_resume_failed_integrity() {
         let (mut atm, admin) = registered();
         crate::admin::create_customer(
             &mut atm,
@@ -832,17 +1023,20 @@ mod tests {
             crate::money::Cents::from_dollars(100),
         )
         .unwrap();
+        request_code(&mut atm, PHONE).unwrap();
+        let code = code(&atm);
         for _ in 0..3 {
             assert!(super::super::login_admin(&mut atm, ADMIN.0, "incorrect password").is_err());
         }
-        let _notice = request_code(&mut atm, PHONE).unwrap();
-        let code = code(&atm);
+        assert!(matches!(request_code(&mut atm, PHONE), Err(AtmError::OutOfService)));
+        assert!(matches!(login(&mut atm, PHONE, &code), Err(AtmError::OutOfService)));
+        assert!(matches!(crate::service::resume(&mut atm, &admin), Err(AtmError::OutOfService)));
         atm.execute("UPDATE accounts SET balance_cents = balance_cents + 50000", []).unwrap();
         atm.reseal();
-        let session = login(&mut atm, PHONE, &code).unwrap();
-        assert!(session.integrity_problem().is_some_and(|p| p.contains("balance")));
+        let authority = testing::authorities(&atm);
+        assert!(crate::service::authorities_resume(&mut atm, &authority, "reviewed").is_err());
         assert!(crate::service::out_of_service(&atm).unwrap());
-        assert!(super::super::login_admin(&mut atm, ADMIN.0, ADMIN.1).is_ok());
+        assert!(matches!(super::super::login_admin(&mut atm, ADMIN.0, ADMIN.1), Err(AtmError::OutOfService)));
     }
 
     #[test]
@@ -995,7 +1189,7 @@ mod tests {
         assert!(keys::same_mac(signature.trim(), &keys::alert_signature(body).unwrap()));
         assert!(!keys::same_mac(
             signature.trim(),
-            &keys::alert_signature(&body.replace("Requested phone:", "Changed phone:")).unwrap()
+            &keys::alert_signature(&body.replace("ATM ID:", "Changed ATM ID:")).unwrap()
         ));
         let timestamp = body.lines().find_map(|line| line.strip_prefix("Alert time (UTC): ")).unwrap();
         chrono::DateTime::parse_from_rfc3339(timestamp).unwrap();

@@ -602,20 +602,13 @@ export component TellerScreen inherits Rectangle {
 
         // 2: locked cards
         if Bank.teller-tab == 2: Panel {
-            Title { text: "Locked cards"; hint: "Locked after 3 wrong PINs. Check the customer's photo ID against the name and date of birth, then type the number from the card they hand you. One unlock per card per day."; }
+            Title { text: "Locked cards"; hint: "Three incorrect PIN attempts lock that customer's sign-in. Bank Authorities must review and resolve the lock through their terminal."; }
             DataTable {
                 vertical-stretch: 1;
                 headers: ["Card", "Account", "Name", "Date of birth"];
                 widths: [0.24, 0.24, 0.32, 0.20];
                 rows: Bank.locked-rows;
                 empty-text: "No locked cards.";
-            }
-            HorizontalLayout {
-                spacing: 12px;
-                alignment: start;
-                card := Field { width: 320px; label: "Card number, from the customer's card"; placeholder: "10 digits"; }
-                if Bank.demo-names.length > 0: DemoPick { picked(n) => { card.text = n; } }
-                VerticalLayout { alignment: end; ActionButton { text: "Unlock card"; clicked => { Bank.unlock(card.text); } } }
             }
             Notice { text: Bank.message; ok: Bank.message-ok; }
         }
