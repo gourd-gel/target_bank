@@ -164,9 +164,19 @@ pub struct AdminSession {
     username: String,
     clock: IdleClock,
     integrity_problem: Option<String>,
+    reset_generation: Option<u64>,
 }
 
 impl AdminSession {
+    /// Persistent teller-account status, read fresh across sessions and restarts.
+    pub fn is_pin_changed(&self, atm: &Atm) -> Result<bool> {
+        let conn = atm.read()?;
+        atm.admit_identity(self)?;
+        Ok(recovery::pin_state(&conn, &self.username)?.0)
+    }
+    pub fn has_otp_reset_approval(&self) -> bool {
+        self.reset_generation.is_some()
+    }
     /// What the automatic integrity check at sign-in found wrong (None = all good).
     /// When set, the ATM was taken out of service (see service.rs).
     pub fn integrity_problem(&self) -> Option<&str> {
@@ -233,6 +243,9 @@ impl HandlerSession {
 /// What every session type has: the bank that issued it, an idle clock, and
 /// a check that the database still allows it.
 pub(crate) trait Session {
+    fn requires_password_reset(&self, _conn: &Connection) -> Result<bool> {
+        Ok(false)
+    }
     /// Id of the `Atm` that issued this session.
     fn bank(&self) -> u64;
     /// This session's idle clock.
@@ -276,6 +289,9 @@ impl Session for CustomerSession {
 }
 
 impl Session for AdminSession {
+    fn requires_password_reset(&self, conn: &Connection) -> Result<bool> {
+        Ok(!recovery::pin_state(conn, &self.username)?.0)
+    }
     /// Id of the issuing `Atm`.
     fn bank(&self) -> u64 {
         self.bank
@@ -339,6 +355,14 @@ impl Atm {
     /// STRIDE (Spoofing / Elevation of Privilege): stops an "admin" session made on a throwaway
     /// database being used here, and a session outliving a lock or closure.
     pub(crate) fn admit(&self, session: &impl Session) -> Result<()> {
+        self.admit_identity(session)?;
+        if session.requires_password_reset(&self.conn)? {
+            return Err(AtmError::NotAllowed("complete the OTP-authorized teller password reset first"));
+        }
+        Ok(())
+    }
+
+    fn admit_identity(&self, session: &impl Session) -> Result<()> {
         if session.bank() != self.id || !session.still_allowed(&self.conn)? {
             session.clock().ended.set(true);
             return Err(AtmError::SessionExpired);
@@ -356,9 +380,12 @@ impl Atm {
     /// inside the write lock. A halt, card lock or closure that another
     /// process committed while this one waited for the lock still stops it.
     pub(crate) fn begin_for(&mut self, session: &impl Session) -> Result<crate::Tx<'_>> {
+        self.admit(session)?;
         let tx = self.begin()?;
         let refused = if !session.still_allowed(&tx)? {
             Some(AtmError::SessionExpired)
+        } else if session.requires_password_reset(&tx)? {
+            Some(AtmError::NotAllowed("complete the OTP-authorized teller password reset first"))
         } else if (session.stops_when_halted() && crate::service::halted(&tx)?.is_some())
             || (session.stops_for_teller_lock() && crate::service::teller_locked(&tx)?)
         {
@@ -368,7 +395,9 @@ impl Atm {
         };
         match refused {
             Some(e) => {
-                session.clock().ended.set(true);
+                if !matches!(e, AtmError::NotAllowed(_)) {
+                    session.clock().ended.set(true);
+                }
                 Err(e)
             }
             None => Ok(tx),
@@ -781,7 +810,13 @@ fn staff_cooldown_secs(attempts: i64) -> i64 {
 pub fn login_admin(atm: &mut Atm, username: &str, password: &str) -> Result<AdminSession> {
     let username = login_staff(atm, username, password, "admin")?;
     let integrity_problem = crate::service::check_at_sign_in(atm, &format!("admin:{username}"))?;
-    Ok(AdminSession { bank: atm.id, username, clock: IdleClock::new(), integrity_problem })
+    Ok(AdminSession {
+        bank: atm.id,
+        username,
+        clock: IdleClock::new(),
+        integrity_problem,
+        reset_generation: None,
+    })
 }
 
 /// Cash Handler sign-in.
@@ -820,6 +855,41 @@ fn change_staff_password(atm: &mut Atm, username: &str, role: &str, current: &st
 pub fn change_admin_password(atm: &mut Atm, session: &AdminSession, current: &str, new: &str) -> Result<()> {
     atm.admit(session)?;
     change_staff_password(atm, &session.username, "admin", current, new)
+}
+
+/// Reset the existing teller password after an OTP has already signed them in.
+/// No old password is required: the single-use OTP authorized this session.
+pub fn complete_teller_password_reset(atm: &mut Atm, session: &AdminSession, new: &str) -> Result<()> {
+    atm.admit_identity(session)?;
+    let generation = session
+        .reset_generation
+        .ok_or(AtmError::NotAllowed("verify a recovery OTP before resetting the teller password"))?;
+    input::validate_password(new)?;
+    let identity = staff_identity(&session.username, "admin");
+    let hash = hash_secret(new, &identity)?;
+    let tx = atm.begin()?;
+    atm_reset_identity(&tx, session)?;
+    recovery::approve_password_reset(&tx, &session.username, generation)?;
+    let old: String = tx.query_row(
+        "SELECT password_hash FROM staff WHERE username=?1 AND role='admin'",
+        [&session.username],
+        |r| r.get(0),
+    )?;
+    if verify_secret(new, &old, &identity) {
+        return Err(AtmError::InvalidInput("the new password must be different from the current one"));
+    }
+    tx.execute("UPDATE staff SET password_hash=?2,failed_attempts=0,cooldown_until=NULL WHERE username=?1 AND role='admin'", params![session.username, hash])?;
+    log(&tx, &session.actor(), Action::PasswordChanged, None, "password reset in OTP-authenticated session")?;
+    tx.commit()?;
+    Ok(())
+}
+
+fn atm_reset_identity(conn: &Connection, session: &AdminSession) -> Result<()> {
+    session.clock.touch()?;
+    if !session.still_allowed(conn)? {
+        return Err(AtmError::SessionExpired);
+    }
+    crate::service::refuse_teller_lock(conn)
 }
 
 /// Cash Handler changes their own password.
@@ -924,6 +994,9 @@ pub fn first_run_setup(
     recovery::apply_authorities_configuration(&tx, bank_id)?;
     log(&tx, "system", Action::Setup, None, "first-run setup: staff accounts created")?;
     tx.commit()?;
+    recovery::provision_secondary_phones(atm).map_err(|_| AtmError::NotAllowed(
+        "staff setup completed, but secondary-phone provisioning failed; repair the protected secret file and restart the ATM"
+    ))?;
     Ok(())
 }
 

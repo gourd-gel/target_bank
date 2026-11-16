@@ -155,6 +155,10 @@ the GUI.
 Bank Authorities can inspect databases, trace user/teller activity and check integrity
 from a separate terminal: `cargo authorities --directory /path/to/bank-folder`.
 See [Authorities terminal commands](docs/BANK_AUTHORITIES.md) for sign-in and inspection.
+Teller recovery OTPs go to a verified primary and a privately provisioned secondary.
+OTP sign-in authorizes resetting the existing teller password; the persistent,
+account-wide `is_pin_changed` flag gates the main page. See
+[Teller OTP password recovery](docs/TELLER_PHONE_RECOVERY.md).
 Three consecutive incorrect teller credentials lock ATM booth services and
 queue an Authorities text alert. Authorities restore service with
 `resume-service <review reason>` after review and a passing integrity check.
@@ -198,23 +202,32 @@ and local configuration files remain under programmer control.
 Register the teller number separately under **My password → Cell phone
 recovery**, using the teller's current password and the delivered code.
 On the sign-in screen, **Forgot staff ID or password?** signs in using that
-registered phone and a fresh code. The password stays unchanged.
+registered primary phone and a fresh code, then asks for a new existing teller
+password before opening the main page. Successful OTP verification resets the
+account-wide `is_pin_changed` flag to false; saving the password sets it true.
+The flag is shared across sessions and survives restart.
 
-Authentication codes are written to a text file beside the bank database,
+Primary authentication codes are written to a text file beside the bank database,
 using the normalized phone number as its name: for `+1 (212) 555-1234`, open
 `+12125551234.txt`. The file contains the six-digit code and is replaced when
 a fresh code is issued. This works in both normal and demo mode; no SMS
 provider or network setup is needed. Read the file, then enter its code in
 the verification field. CLI enrollment is teller menu option **19**; enter
 **/phone** at the teller username prompt for phone sign-in.
+Each file-backed teller also receives a generated simulated secondary number
+in `<bank-stem>.teller-phones.secret` (owner-only, excluded from Git). Its OTP
+copy uses `.<bank-stem>.<teller>.secondary-otp.txt` so the filename does not reveal
+the secondary number. Only the primary number appears in the GUI and reports.
 
 Codes expire after five minutes, work once, and allow five verification
 attempts. Requests are limited to one per minute and three per fifteen-minute
 window per teller, including delivery failures. Phone enrollment requires
 both the current password and verification of the new number. Recovery data
 is encrypted and covered by the existing database seal; phone numbers and
-codes stay out of the audit log. Verified phone numbers are AES-GCM encrypted
-in `staff.phone_enc`, alongside `username` and `password_hash`. Version 6
+codes stay out of the audit log. Registration, OTP sign-in and password-reset
+events remain audited. The primary phone is AES-GCM encrypted in
+`staff.phone_enc`; the hidden secondary and persistent reset state are encrypted
+in the sealed recovery metadata. Version 6
 banks migrate automatically to version 7 after verifying their original seal
 and anchor; existing verified teller numbers, usernames, passwords, IDs and
 login counters are preserved.

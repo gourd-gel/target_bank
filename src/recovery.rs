@@ -1,17 +1,27 @@
-//! Teller phone recovery. Verified phones live encrypted in `staff`, beside
-//! credentials; sealed `meta` records keep temporary challenge state.
+//! Teller phone recovery. The first verified phone lives encrypted in `staff`;
+//! sealed, encrypted `meta` holds the optional second phone and challenge state.
 use super::*;
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
 const TTL: i64 = 300;
 const MAX_ATTEMPTS: u8 = 5;
-const REQUEST_NOTICE: &str = "If this phone is registered, its code is in <phone-number>.txt beside the bank database. Codes expire after 5 minutes. Wait at least 60 seconds before requesting another.";
+const REQUEST_NOTICE: &str = "If this phone is registered, a recovery code is sent to every verified number for this teller, in each <phone-number>.txt beside the bank database. Codes expire after 5 minutes. Wait at least 60 seconds before requesting another.";
 
 #[derive(Default, Serialize, Deserialize)]
 struct Record {
     #[serde(default, skip_serializing)]
     phone: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    secondary_phone: Option<String>,
+    #[serde(default)]
+    secondary_provisioned: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    is_pin_changed: Option<bool>,
+    #[serde(default)]
+    reset_generation: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    login_phone: Option<String>,
     pending: Option<String>,
     purpose: String,
     hash: String,
@@ -63,6 +73,22 @@ fn save(conn: &Connection, username: &str, record: &Record) -> Result<()> {
         params![record_key(username), stored],
     )?;
     Ok(())
+}
+
+pub(crate) fn pin_state(conn: &Connection, username: &str) -> Result<(bool, u64)> {
+    let record = load(conn, username)?;
+    Ok((record.is_pin_changed.unwrap_or(true), record.reset_generation))
+}
+
+pub(crate) fn approve_password_reset(conn: &Connection, username: &str, generation: u64) -> Result<()> {
+    let mut record = load(conn, username)?;
+    if record.is_pin_changed != Some(false) || record.reset_generation != generation {
+        return Err(AtmError::NotAllowed(
+            "this OTP approval is no longer current; verify a new recovery code",
+        ));
+    }
+    record.is_pin_changed = Some(true);
+    save(conn, username, &record)
 }
 
 const AUTHORITIES: &str = "bank authorities";
@@ -208,7 +234,145 @@ fn staff_phone(conn: &Connection, username: &str) -> Result<Option<String>> {
     stored.map(|bytes| keys::unseal("staff.phone", username, &bytes)).transpose()
 }
 
+pub(crate) fn staff_phones(conn: &Connection, username: &str) -> Result<Vec<String>> {
+    let mut phones: Vec<String> = staff_phone(conn, username)?.into_iter().collect();
+    if !phones.is_empty()
+        && let Some(second) = load(conn, username)?.secondary_phone
+    {
+        phones.push(second);
+    }
+    Ok(phones)
+}
+
+pub fn secondary_secret_path(bank: &std::path::Path) -> std::path::PathBuf {
+    bank.with_extension("teller-phones.secret")
+}
+
+/// Provision simulated secondary destinations without printing their values.
+/// In-memory unit-test banks explicitly enroll their own fixture numbers.
+pub(crate) fn provision_secondary_phones(atm: &mut Atm) -> Result<()> {
+    use std::collections::{BTreeMap, BTreeSet};
+    let Some(bank_path) = atm.conn.path().filter(|p| !p.is_empty()).map(std::path::PathBuf::from) else {
+        return Ok(());
+    };
+    let path = secondary_secret_path(&bank_path);
+    let mut numbers: BTreeMap<String, String> = match std::fs::symlink_metadata(&path) {
+        Ok(metadata) => {
+            if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() > 1_048_576 {
+                return Err(AtmError::NotAllowed("invalid teller secondary-phone secret file"));
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if metadata.permissions().mode() & 0o077 != 0 {
+                    return Err(AtmError::NotAllowed(
+                        "teller secondary-phone secret file must have owner-only permissions",
+                    ));
+                }
+            }
+            let clear = Zeroizing::new(
+                std::fs::read_to_string(&path)
+                    .map_err(|_| AtmError::NotAllowed("cannot read teller secondary-phone secret file"))?,
+            );
+            serde_json::from_str(&clear)
+                .map_err(|_| AtmError::NotAllowed("invalid teller secondary-phone secret file"))?
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
+        Err(_) => return Err(AtmError::NotAllowed("cannot read teller secondary-phone secret file")),
+    };
+    let tx = atm.begin()?;
+    let names = {
+        let mut stmt = tx.prepare("SELECT username FROM staff WHERE role='admin' ORDER BY id")?;
+        stmt.query_map([], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    if names.is_empty() {
+        return Ok(());
+    }
+    let mut used = BTreeSet::new();
+    for (name, number) in &numbers {
+        input::validate_username(name)
+            .map_err(|_| AtmError::NotAllowed("invalid teller identity in secondary-phone secret file"))?;
+        if phone_number(number).ok().as_ref() != Some(number) || !used.insert(number.clone()) {
+            return Err(AtmError::NotAllowed("invalid or duplicate secondary phone in secret file"));
+        }
+    }
+    let mut changed_file = false;
+    let mut changed_bank = false;
+    for name in names {
+        let mut record = load(&tx, &name)?;
+        let chosen = if let Some(number) = numbers.get(&name) {
+            if record.secondary_phone.as_ref().is_some_and(|old| old != number) {
+                return Err(AtmError::NotAllowed(
+                    "secondary-phone secret file does not match sealed teller state",
+                ));
+            }
+            number.clone()
+        } else if let Some(number) = &record.secondary_phone {
+            if used.contains(number) {
+                return Err(AtmError::NotAllowed("duplicate teller secondary phone"));
+            }
+            changed_file = true;
+            number.clone()
+        } else {
+            let mut chosen = None;
+            for _ in 0..10000 {
+                let mut random = [0u8; 4];
+                getrandom::fill(&mut random)
+                    .map_err(|_| AtmError::Internal("no system randomness".into()))?;
+                let candidate = format!("+1555010{:04}", u32::from_le_bytes(random) % 10000);
+                if !used.contains(&candidate) && phone_owner(&tx, &candidate)?.is_none() {
+                    chosen = Some(candidate);
+                    break;
+                }
+            }
+            changed_file = true;
+            chosen.ok_or(AtmError::NotAllowed("could not allocate a simulated secondary phone"))?
+        };
+        if phone_owner(&tx, &chosen)?.is_some_and(|owner| owner != name)
+            || staff_phone(&tx, &name)?.as_ref() == Some(&chosen)
+        {
+            return Err(AtmError::NotAllowed("secondary phone conflicts with an existing staff number"));
+        }
+        used.insert(chosen.clone());
+        numbers.insert(name.clone(), chosen.clone());
+        if record.secondary_phone.as_ref() != Some(&chosen) || !record.secondary_provisioned {
+            record.secondary_phone = Some(chosen);
+            record.secondary_provisioned = true;
+            save(&tx, &name, &record)?;
+            log(
+                &tx,
+                "system",
+                Action::ControlsChanged,
+                None,
+                "teller secondary recovery destination provisioned",
+            )?;
+            changed_bank = true;
+        }
+    }
+    if changed_file {
+        let clear = Zeroizing::new(
+            serde_json::to_string_pretty(&numbers)
+                .map_err(|_| AtmError::Internal("secondary-phone secret encoding".into()))?,
+        );
+        deliver(&path, &clear)?;
+    }
+    if changed_bank {
+        tx.commit()?;
+    }
+    Ok(())
+}
+
+/// Only the signed-in teller can view their registered recovery numbers here.
+pub fn registered_phones(atm: &Atm, session: &AdminSession) -> Result<Vec<String>> {
+    let conn = atm.read()?;
+    atm.admit(session)?;
+    staff_phones(&conn, &session.username)
+}
+
 fn put_phone(conn: &Connection, username: &str, phone: &str) -> Result<()> {
+    if load(conn, username)?.secondary_phone.as_deref() == Some(phone) {
+        return Err(AtmError::NotAllowed("primary and secondary recovery numbers must differ"));
+    }
     let sealed = keys::seal("staff.phone", username, phone)?;
     let changed =
         conn.execute("UPDATE staff SET phone_enc = ?2 WHERE username = ?1", params![username, sealed])?;
@@ -224,7 +388,9 @@ fn phone_owner(conn: &Connection, phone: &str) -> Result<Option<String>> {
         stmt.query_map([], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?
     };
     for name in names {
-        if staff_phone(conn, &name)?.as_deref() == Some(phone) {
+        if staff_phone(conn, &name)?.as_deref() == Some(phone)
+            || load(conn, &name)?.secondary_phone.as_deref() == Some(phone)
+        {
             return Ok(Some(name));
         }
     }
@@ -257,6 +423,9 @@ pub(crate) fn seed_demo_phones(
 
 fn find_phone(conn: &Connection, phone: &str) -> Result<Option<(String, Record)>> {
     let Some(name) = phone_owner(conn, phone)? else { return Ok(None) };
+    if staff_phone(conn, &name)?.is_none() {
+        return Ok(None);
+    }
     let admin: bool =
         conn.query_row("SELECT role = 'admin' FROM staff WHERE username = ?1", [&name], |r| r.get(0))?;
     if admin { Ok(Some((name.clone(), load(conn, &name)?))) } else { Ok(None) }
@@ -361,6 +530,12 @@ fn notify_authorities(conn: &Connection, bank_id: u64, requested_phone: &str, te
     if phone == requested_phone {
         return Err(AtmError::NotAllowed("bank authorities must have a separate phone number"));
     }
+    let public_phone = if let Some(owner) = phone_owner(conn, requested_phone)? {
+        Some(staff_phone(conn, &owner)?.unwrap_or_else(|| "Primary phone not configured".into()))
+    } else {
+        None
+    };
+    let requested_phone = public_phone.as_deref().unwrap_or(requested_phone);
     let path = code_path(conn, bank_id, &phone);
     if conn.path().is_none_or(|path| path.is_empty()) {
         std::fs::create_dir_all(
@@ -409,8 +584,8 @@ pub(crate) fn deliver_customer_alert(
     deliver(&path, &message)
 }
 
-/// Begin enrollment while signed in. Current password is required, and the
-/// phone becomes usable for recovery only after its code has been confirmed.
+/// Add up to two verified recovery numbers. Current password and proof of
+/// possession of the new number are required; an existing number is preserved.
 pub fn enroll(atm: &mut Atm, session: &AdminSession, current_password: &str, phone: &str) -> Result<String> {
     atm.admit(session)?;
     let phone = phone_number(phone)?;
@@ -420,8 +595,19 @@ pub fn enroll(atm: &mut Atm, session: &AdminSession, current_password: &str, pho
     if phone_owner(&tx, &phone)?.is_some_and(|name| name != session.username) {
         return Err(AtmError::NotAllowed("this phone is already registered"));
     }
+    let phones = staff_phones(&tx, &session.username)?;
+    if phones.contains(&phone) {
+        return Err(AtmError::NotAllowed("this phone is already registered to your account"));
+    }
     let mut record = load(&tx, &session.username)?;
-    let (notice, delivery) = start(&tx, bank_id, &mut record, &phone, "enroll")?;
+    if record.secondary_phone.as_deref() == Some(&phone) {
+        return Err(AtmError::NotAllowed("primary and secondary recovery numbers must differ"));
+    }
+    if phones.len() >= 2 && !record.secondary_provisioned {
+        return Err(AtmError::NotAllowed("a teller can register at most two verified phone numbers"));
+    }
+    let (notice, delivery) =
+        start(&tx, bank_id, &mut record, &phone, "enroll", phones.first().map(String::as_str))?;
     save(&tx, &session.username, &record)?;
     log(&tx, &session.actor(), Action::ControlsChanged, None, "recovery phone enrollment requested")?;
     tx.commit()?;
@@ -429,8 +615,7 @@ pub fn enroll(atm: &mut Atm, session: &AdminSession, current_password: &str, pho
     Ok(notice)
 }
 
-/// Confirm possession of a new recovery phone. An unconfirmed replacement
-/// does not replace the previously registered number.
+/// Confirm the new phone before adding it to the teller's verified numbers.
 pub fn confirm_enrollment(atm: &mut Atm, session: &AdminSession, code: &str) -> Result<()> {
     atm.admit(session)?;
     let tx = atm.begin_for(session)?;
@@ -441,7 +626,15 @@ pub fn confirm_enrollment(atm: &mut Atm, session: &AdminSession, code: &str) -> 
         if phone_owner(&tx, &phone)?.is_some_and(|name| name != session.username) {
             return Err(AtmError::NotAllowed("this phone is already registered"));
         }
-        put_phone(&tx, &session.username, &phone)?;
+        let phones = staff_phones(&tx, &session.username)?;
+        if phones.contains(&phone) || (phones.len() >= 2 && !record.secondary_provisioned) {
+            return Err(AtmError::NotAllowed("the phone is already registered or both phone slots are full"));
+        }
+        if phones.is_empty() || record.secondary_provisioned {
+            put_phone(&tx, &session.username, &phone)?;
+        } else {
+            record.secondary_phone = Some(phone);
+        }
         record.pending = None;
     }
     save(&tx, &session.username, &record)?;
@@ -456,7 +649,7 @@ pub fn confirm_enrollment(atm: &mut Atm, session: &AdminSession, code: &str) -> 
     if approved { Ok(()) } else { Err(AtmError::AuthFailed) }
 }
 
-/// Request a sign-in code using only the previously verified phone. Unknown
+/// Request a shared sign-in code for every verified phone using either number. Unknown
 /// numbers and throttled requests return the same notice. The code itself
 /// is delivered only to the phone-number text file, never returned here.
 pub fn request_code(atm: &mut Atm, phone: &str) -> Result<String> {
@@ -500,7 +693,7 @@ pub fn request_code(atm: &mut Atm, phone: &str) -> Result<String> {
         tx.commit()?;
         return Ok(REQUEST_NOTICE.into());
     }
-    let (_notice, delivery) = start(&tx, bank_id, &mut record, &phone, "login")?;
+    let (_notice, delivery) = start(&tx, bank_id, &mut record, &phone, "login", None)?;
     save(&tx, &username, &record)?;
     log(
         &tx,
@@ -525,7 +718,18 @@ pub fn login(atm: &mut Atm, phone: &str, code: &str) -> Result<AdminSession> {
         tx.commit()?;
         return Err(AtmError::AuthFailed);
     };
-    let approved = check(&mut record, &phone, code, "login")?;
+    // Either registered number identifies this same teller. Both copies share
+    // one challenge binding, attempt budget and single-use expiry.
+    let binding = record.login_phone.clone().unwrap_or_else(|| phone.clone());
+    let approved = check(&mut record, &binding, code, "login")?;
+    if approved {
+        record.is_pin_changed = Some(false);
+        record.reset_generation = record
+            .reset_generation
+            .checked_add(1)
+            .ok_or(AtmError::NotAllowed("password reset approval counter exhausted"))?;
+    }
+    let reset_generation = record.reset_generation;
     save(&tx, &username, &record)?;
     log(
         &tx,
@@ -542,7 +746,13 @@ pub fn login(atm: &mut Atm, phone: &str, code: &str) -> Result<AdminSession> {
         return Err(AtmError::AuthFailed);
     }
     let integrity_problem = crate::service::check_at_sign_in(atm, &format!("admin:{username}"))?;
-    Ok(AdminSession { bank: atm.id, username, clock: IdleClock::new(), integrity_problem })
+    Ok(AdminSession {
+        bank: atm.id,
+        username,
+        clock: IdleClock::new(),
+        integrity_problem,
+        reset_generation: Some(reset_generation),
+    })
 }
 
 fn can_send(record: &Record) -> bool {
@@ -560,7 +770,7 @@ pub fn request_authorities_code(atm: &mut Atm, phone: &str) -> Result<String> {
     if let Some(phone) = valid {
         let mut record = load(&tx, AUTHORITIES)?;
         let outcome = if can_send(&record) {
-            let (_, delivered) = start(&tx, bank_id, &mut record, &phone, "authorities-login")?;
+            let (_, delivered) = start(&tx, bank_id, &mut record, &phone, "authorities-login", None)?;
             save(&tx, AUTHORITIES, &record)?;
             if delivered.is_ok() { "code_delivered" } else { "delivery_failed" }
         } else {
@@ -627,6 +837,22 @@ fn code_path(conn: &Connection, bank_id: u64, phone: &str) -> std::path::PathBuf
     directory.join(format!("{phone}.txt"))
 }
 
+fn otp_delivery_path(conn: &Connection, bank_id: u64, phone: &str) -> Result<std::path::PathBuf> {
+    if let Some(owner) = phone_owner(conn, phone)? {
+        let record = load(conn, &owner)?;
+        if record.secondary_provisioned && record.secondary_phone.as_deref() == Some(phone) {
+            let bank_label = conn
+                .path()
+                .and_then(|p| std::path::Path::new(p).file_stem())
+                .and_then(|p| p.to_str())
+                .unwrap_or("bank");
+            return Ok(code_path(conn, bank_id, "+")
+                .with_file_name(format!(".{bank_label}.{owner}.secondary-otp.txt")));
+        }
+    }
+    Ok(code_path(conn, bank_id, phone))
+}
+
 // Replace atomically, without following a pre-existing destination symlink.
 // Restrict access to the current user on Unix. The file contains only the code.
 pub(crate) fn deliver(path: &std::path::Path, code: &str) -> Result<()> {
@@ -664,12 +890,13 @@ fn start(
     record: &mut Record,
     phone: &str,
     purpose: &str,
+    display_phone: Option<&str>,
 ) -> Result<(String, Result<()>)> {
     if !can_send(record) {
         notify_authorities(
             conn,
             bank_id,
-            phone,
+            display_phone.unwrap_or(phone),
             "No verification text was sent: the request is temporarily rate limited.",
         )?;
         return Err(AtmError::NotAllowed("wait before requesting another phone code"));
@@ -685,6 +912,7 @@ fn start(
     record.attempts = 0;
     record.purpose = purpose.into();
     record.pending = if purpose == "enroll" { Some(phone.into()) } else { None };
+    record.login_phone = if purpose == "login" { Some(phone.into()) } else { None };
     let mut bytes = [0u8; 4];
     getrandom::fill(&mut bytes).map_err(|_| AtmError::Internal("no system randomness".into()))?;
     let code = Zeroizing::new(format!("{:06}", u32::from_le_bytes(bytes) % 1_000_000));
@@ -703,12 +931,39 @@ fn start(
     let delivery = if purpose == "authorities-login" {
         deliver(&path, &code)
     } else {
-        notify_authorities(conn, bank_id, phone, &text).and_then(|_| deliver(&path, &code))
+        let targets = if purpose == "login" {
+            let owner = phone_owner(conn, phone)?.ok_or(AtmError::AuthFailed)?;
+            staff_phones(conn, &owner)?
+        } else {
+            vec![phone.to_string()]
+        };
+        let notification = if targets.len() > 1 {
+            format!("{text}OTP destinations: {} verified numbers", targets.len())
+        } else {
+            text
+        };
+        let public_phone = display_phone.or_else(|| targets.first().map(String::as_str)).unwrap_or(phone);
+        notify_authorities(conn, bank_id, public_phone, &notification).and_then(|_| {
+            let mut failure = None;
+            for target in targets {
+                if let Err(e) =
+                    otp_delivery_path(conn, bank_id, &target).and_then(|target| deliver(&target, &code))
+                {
+                    failure.get_or_insert(e);
+                }
+            }
+            failure.map_or(Ok(()), Err)
+        })
     };
     if delivery.is_err() {
         record.expires = 0;
     }
-    Ok((format!("Read the verification code from {}. It expires in 5 minutes.", path.display()), delivery))
+    let notice = if display_phone.is_some_and(|primary| primary != phone) {
+        "A verification code was sent to the new number. It expires in 5 minutes.".into()
+    } else {
+        format!("Read the verification code from {}. It expires in 5 minutes.", path.display())
+    };
+    Ok((notice, delivery))
 }
 
 fn check(record: &mut Record, phone: &str, code: &str, purpose: &str) -> Result<bool> {
@@ -733,6 +988,358 @@ mod tests {
     use super::super::testing::{self, ADMIN};
     use super::*;
     const PHONE: &str = "+12125551234";
+    const SECOND_PHONE: &str = "+12125556789";
+
+    fn reset_send_window(atm: &mut Atm) {
+        let tx = atm.begin().unwrap();
+        let mut record = load(&tx, ADMIN.0).unwrap();
+        record.next_send = 0;
+        record.window = 0;
+        record.sends = 0;
+        save(&tx, ADMIN.0, &record).unwrap();
+        tx.commit().unwrap();
+    }
+
+    fn two_registered() -> (Atm, AdminSession) {
+        let (mut atm, admin) = registered();
+        let notice = enroll(&mut atm, &admin, ADMIN.1, SECOND_PHONE).unwrap();
+        assert!(!notice.contains(SECOND_PHONE));
+        let code = std::fs::read_to_string(code_path(&atm.conn, atm.id, SECOND_PHONE)).unwrap();
+        confirm_enrollment(&mut atm, &admin, code.trim()).unwrap();
+        reset_send_window(&mut atm);
+        (atm, admin)
+    }
+
+    #[test]
+    fn second_phone_is_added_after_proof_and_recovery_code_is_shared_single_use() {
+        let (mut atm, admin) = registered();
+        let first_file = code(&atm);
+        enroll(&mut atm, &admin, ADMIN.1, SECOND_PHONE).unwrap();
+        assert_eq!(registered_phones(&atm, &admin).unwrap(), vec![PHONE]);
+        assert_eq!(code(&atm), first_file, "new phone proof was sent to an old number");
+        let second_code = std::fs::read_to_string(code_path(&atm.conn, atm.id, SECOND_PHONE)).unwrap();
+        assert!(confirm_enrollment(&mut atm, &admin, "wrong").is_err());
+        assert_eq!(registered_phones(&atm, &admin).unwrap(), vec![PHONE]);
+        confirm_enrollment(&mut atm, &admin, second_code.trim()).unwrap();
+        assert_eq!(registered_phones(&atm, &admin).unwrap(), vec![PHONE, SECOND_PHONE]);
+        assert!(enroll(&mut atm, &admin, ADMIN.1, "+1 (212) 555-1234").is_err());
+        assert!(enroll(&mut atm, &admin, ADMIN.1, "+12125557890").is_err());
+        for (request, use_phone, replay_phone) in
+            [(PHONE, SECOND_PHONE, PHONE), (SECOND_PHONE, PHONE, SECOND_PHONE)]
+        {
+            reset_send_window(&mut atm);
+            request_code(&mut atm, request).unwrap();
+            let shared = code(&atm);
+            assert_eq!(
+                std::fs::read_to_string(code_path(&atm.conn, atm.id, SECOND_PHONE)).unwrap().trim(),
+                shared
+            );
+            let alert = std::fs::read_to_string(code_path(&atm.conn, atm.id, "+12125550199")).unwrap();
+            assert!(alert.contains("OTP destinations: 2 verified numbers"));
+            assert!(alert.contains(&format!("Requested phone: {PHONE}")));
+            assert!(!alert.contains(SECOND_PHONE));
+            assert_alert_signature(&alert);
+            assert_eq!(login(&mut atm, use_phone, &shared).unwrap().actor(), "admin:alice");
+            assert!(login(&mut atm, replay_phone, &shared).is_err());
+        }
+    }
+
+    #[test]
+    fn both_phones_share_throttling_expiry_attempts_and_partial_delivery_failure() {
+        let (mut atm, _) = two_registered();
+        request_code(&mut atm, PHONE).unwrap();
+        let issued = code(&atm);
+        request_code(&mut atm, SECOND_PHONE).unwrap();
+        assert_eq!(code(&atm), issued, "alternate phone bypassed the send throttle");
+        assert_eq!(load(&atm.conn, ADMIN.0).unwrap().sends, 1);
+        for phone in [PHONE, SECOND_PHONE, PHONE, SECOND_PHONE, PHONE] {
+            assert!(login(&mut atm, phone, "not-a-code").is_err());
+        }
+        assert_eq!(load(&atm.conn, ADMIN.0).unwrap().attempts, 5);
+        assert!(login(&mut atm, SECOND_PHONE, &issued).is_err());
+        reset_send_window(&mut atm);
+        request_code(&mut atm, SECOND_PHONE).unwrap();
+        let tx = atm.begin().unwrap();
+        let mut record = load(&tx, ADMIN.0).unwrap();
+        record.expires = Utc::now().timestamp() - 1;
+        save(&tx, ADMIN.0, &record).unwrap();
+        tx.commit().unwrap();
+        let expired = code(&atm);
+        assert!(login(&mut atm, PHONE, &expired).is_err());
+        reset_send_window(&mut atm);
+        let second_path = code_path(&atm.conn, atm.id, SECOND_PHONE);
+        std::fs::remove_file(&second_path).unwrap();
+        std::fs::create_dir(&second_path).unwrap();
+        request_code(&mut atm, PHONE).unwrap();
+        let delivered_to_one = code(&atm);
+        assert_eq!(load(&atm.conn, ADMIN.0).unwrap().expires, 0);
+        assert!(login(&mut atm, PHONE, &delivered_to_one).is_err());
+        assert!(login(&mut atm, SECOND_PHONE, &delivered_to_one).is_err());
+        assert_eq!(load(&atm.conn, ADMIN.0).unwrap().sends, 1);
+        // A failure at the first destination must not skip the second send.
+        std::fs::remove_dir(&second_path).unwrap();
+        let first_path = code_path(&atm.conn, atm.id, PHONE);
+        std::fs::remove_file(&first_path).unwrap();
+        std::fs::create_dir(&first_path).unwrap();
+        reset_send_window(&mut atm);
+        request_code(&mut atm, SECOND_PHONE).unwrap();
+        let second_copy = std::fs::read_to_string(second_path).unwrap();
+        assert_eq!(second_copy.trim().len(), 6);
+        assert_eq!(load(&atm.conn, ADMIN.0).unwrap().expires, 0);
+        assert!(login(&mut atm, SECOND_PHONE, second_copy.trim()).is_err());
+    }
+
+    #[test]
+    fn secondary_phone_is_exclusive_and_not_exposed_by_authorities_reports() {
+        let (mut atm, admin) = two_registered();
+        let tx = atm.begin().unwrap();
+        assert!(configure_authorities_phone(&tx, SECOND_PHONE).is_err());
+        tx.commit().unwrap();
+        let authority = testing::authorities(&atm);
+        let staff = crate::oversight::staff(&atm, &authority, Some(ADMIN.0), 0).unwrap();
+        assert_eq!(staff[0]["phone"], PHONE);
+        assert_eq!(staff[0]["verified_phone_count"], 2);
+        assert!(!serde_json::to_string(&staff).unwrap().contains(SECOND_PHONE));
+        let tx = atm.begin().unwrap();
+        let hash = hash_secret(ADMIN.1, &staff_identity("other", "admin")).unwrap();
+        tx.execute("INSERT INTO staff(username,role,password_hash) VALUES ('other','admin',?1)", [hash])
+            .unwrap();
+        tx.commit().unwrap();
+        let other = super::super::login_admin(&mut atm, "other", ADMIN.1).unwrap();
+        assert!(enroll(&mut atm, &other, ADMIN.1, SECOND_PHONE).is_err());
+        assert!(enroll(&mut atm, &admin, ADMIN.1, "+12125550199").is_err());
+        let raw: String = atm
+            .conn
+            .query_row("SELECT value FROM meta WHERE key=?1", [record_key(ADMIN.0)], |r| r.get(0))
+            .unwrap();
+        assert!(!raw.contains(SECOND_PHONE));
+    }
+
+    #[test]
+    fn secondary_phone_actions_remain_audited_without_recording_the_number() {
+        let (mut atm, teller) = registered();
+        let notice = enroll(&mut atm, &teller, ADMIN.1, SECOND_PHONE).unwrap();
+        assert!(!notice.contains(SECOND_PHONE));
+        let alert = std::fs::read_to_string(code_path(&atm.conn, atm.id, "+12125550199")).unwrap();
+        assert!(!alert.contains(SECOND_PHONE));
+        let code = std::fs::read_to_string(code_path(&atm.conn, atm.id, SECOND_PHONE)).unwrap();
+        confirm_enrollment(&mut atm, &teller, code.trim()).unwrap();
+        let events: String = atm
+            .conn
+            .query_row(
+                "SELECT group_concat(actor || ' ' || action || ' ' || detail, '|') FROM audit_log",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(events.contains("recovery phone enrollment requested"));
+        assert!(events.contains("recovery phone verified"));
+        assert!(!events.contains(SECOND_PHONE));
+        let authority = testing::authorities(&atm);
+        let events = crate::administration::recent(&atm, &authority, 0).unwrap();
+        assert!(!serde_json::to_string(&events).unwrap().contains(SECOND_PHONE));
+    }
+
+    #[test]
+    fn generated_secondary_is_secret_and_password_reset_status_is_shared_and_persistent() {
+        let folder = std::env::temp_dir().join(format!("atm-two-teller-phones-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let db = folder.join("atm.db");
+        let key = folder.join("atm.key");
+        std::fs::write(&key, [7u8; 32]).unwrap();
+        std::fs::write(folder.join(AUTHORITIES_CONFIG_FILE), "+12125550199").unwrap();
+        let mut atm = Atm::create(&db, &key).unwrap();
+        let (teller, _) = testing::setup(&mut atm);
+        let tx = atm.begin().unwrap();
+        let other_hash = hash_secret(ADMIN.1, &staff_identity("other", "admin")).unwrap();
+        tx.execute(
+            "INSERT INTO staff(username,role,password_hash) VALUES ('other','admin',?1)",
+            [other_hash],
+        )
+        .unwrap();
+        tx.commit().unwrap();
+        provision_secondary_phones(&mut atm).unwrap();
+        let secret_path = secondary_secret_path(&db);
+        let secret: std::collections::BTreeMap<String, String> =
+            serde_json::from_str(&std::fs::read_to_string(&secret_path).unwrap()).unwrap();
+        let hidden = secret.get(ADMIN.0).unwrap().clone();
+        assert_eq!(secret.len(), 2);
+        assert_ne!(secret.get(ADMIN.0), secret.get("other"));
+        assert!(phone_number(&hidden).is_ok());
+        let original = std::fs::read_to_string(&secret_path).unwrap();
+        let mut changed = secret.clone();
+        changed.insert(ADMIN.0.into(), "+19999999999".into());
+        deliver(&secret_path, &serde_json::to_string(&changed).unwrap()).unwrap();
+        let error = provision_secondary_phones(&mut atm).err().unwrap().to_string();
+        assert!(!error.contains(&hidden));
+        deliver(&secret_path, &original).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&secret_path).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+        enroll(&mut atm, &teller, ADMIN.1, PHONE).unwrap();
+        let proof = code(&atm);
+        confirm_enrollment(&mut atm, &teller, &proof).unwrap();
+        assert_eq!(staff_phones(&atm.conn, ADMIN.0).unwrap(), vec![PHONE.to_string(), hidden.clone()]);
+        // A visible-number registration replaces the primary only after proof.
+        reset_send_window(&mut atm);
+        let notice = enroll(&mut atm, &teller, ADMIN.1, SECOND_PHONE).unwrap();
+        assert!(!notice.contains(&hidden));
+        assert_eq!(staff_phone(&atm.conn, ADMIN.0).unwrap().as_deref(), Some(PHONE));
+        let proof = std::fs::read_to_string(folder.join(format!("{SECOND_PHONE}.txt"))).unwrap();
+        confirm_enrollment(&mut atm, &teller, proof.trim()).unwrap();
+        reset_send_window(&mut atm);
+        drop(atm);
+        let mut atm = Atm::open(&db, &key).unwrap();
+        request_code(&mut atm, SECOND_PHONE).unwrap();
+        let public = std::fs::read_to_string(folder.join(format!("{SECOND_PHONE}.txt"))).unwrap();
+        let private =
+            std::fs::read_to_string(otp_delivery_path(&atm.conn, atm.id, &hidden).unwrap()).unwrap();
+        assert_eq!(public, private);
+        let session = login(&mut atm, SECOND_PHONE, public.trim()).unwrap();
+        assert!(!session.is_pin_changed(&atm).unwrap());
+        let mut sibling = Atm::open(&db, &key).unwrap();
+        let observer = super::super::login_admin(&mut sibling, ADMIN.0, ADMIN.1).unwrap();
+        assert!(!observer.is_pin_changed(&sibling).unwrap());
+        assert!(crate::admin::list_accounts(&sibling, &observer).is_err());
+        assert!(
+            super::super::complete_teller_password_reset(
+                &mut sibling,
+                &observer,
+                "unapproved password reset"
+            )
+            .is_err()
+        );
+        assert!(super::super::complete_teller_password_reset(&mut atm, &session, ADMIN.1).is_err());
+        assert!(crate::admin::list_accounts(&atm, &session).is_err());
+        assert!(enroll(&mut atm, &session, ADMIN.1, PHONE).is_err());
+        assert!(super::super::complete_teller_password_reset(&mut atm, &session, "short").is_err());
+        assert!(!session.is_pin_changed(&atm).unwrap());
+        let new_password = "a newly registered password";
+        super::super::complete_teller_password_reset(&mut atm, &session, new_password).unwrap();
+        assert!(session.is_pin_changed(&atm).unwrap());
+        assert!(observer.is_pin_changed(&sibling).unwrap());
+        assert!(crate::admin::list_accounts(&sibling, &observer).is_ok());
+        drop(sibling);
+        assert!(crate::admin::list_accounts(&atm, &session).is_ok());
+        assert!(
+            super::super::complete_teller_password_reset(&mut atm, &session, "another valid password")
+                .is_err()
+        );
+        assert!(super::super::login_admin(&mut atm, ADMIN.0, ADMIN.1).is_err());
+        assert!(super::super::login_admin(&mut atm, ADMIN.0, new_password).is_ok());
+        assert!(login(&mut atm, SECOND_PHONE, public.trim()).is_err());
+        reset_send_window(&mut atm);
+        request_code(&mut atm, SECOND_PHONE).unwrap();
+        assert!(session.is_pin_changed(&atm).unwrap(), "requesting an OTP must not reset the account flag");
+        let code = std::fs::read_to_string(folder.join(format!("{SECOND_PHONE}.txt"))).unwrap();
+        let next = login(&mut atm, SECOND_PHONE, code.trim()).unwrap();
+        assert!(!next.is_pin_changed(&atm).unwrap());
+        assert!(!session.is_pin_changed(&atm).unwrap());
+        assert!(
+            super::super::complete_teller_password_reset(&mut atm, &session, "stale OTP approval password")
+                .is_err()
+        );
+        super::super::complete_teller_password_reset(&mut atm, &next, "the final recovered password")
+            .unwrap();
+        assert!(session.is_pin_changed(&atm).unwrap());
+        next.end();
+        assert!(
+            super::super::complete_teller_password_reset(&mut atm, &next, "another valid password").is_err()
+        );
+        let events: String = atm
+            .conn
+            .query_row(
+                "SELECT group_concat(actor || ' ' || action || ' ' || detail,'|') FROM audit_log",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(events.contains("password reset in OTP-authenticated session"));
+        assert!(!events.contains(&hidden));
+        let alert = std::fs::read_to_string(folder.join("+12125550199.txt")).unwrap();
+        assert!(!alert.contains(&hidden));
+        assert!(alert.contains(SECOND_PHONE));
+        let same: std::collections::BTreeMap<String, String> =
+            serde_json::from_str(&std::fs::read_to_string(secret_path).unwrap()).unwrap();
+        assert_eq!(same.get(ADMIN.0), Some(&hidden));
+        drop(atm);
+        let mut reopened = Atm::open(&db, &key).unwrap();
+        let after_restart =
+            super::super::login_admin(&mut reopened, ADMIN.0, "the final recovered password").unwrap();
+        assert!(after_restart.is_pin_changed(&reopened).unwrap());
+        drop(reopened);
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
+    fn otp_password_reset_refuses_wrong_bank_and_failed_write_never_approves_session() {
+        let (mut atm, _) = registered();
+        request_code(&mut atm, PHONE).unwrap();
+        let issued = code(&atm);
+        let session = login(&mut atm, PHONE, &issued).unwrap();
+        let mut other = Atm::in_memory().unwrap();
+        testing::setup(&mut other);
+        assert!(
+            super::super::complete_teller_password_reset(&mut other, &session, "a new recovered password")
+                .is_err()
+        );
+        assert!(
+            super::super::complete_teller_password_reset(&mut atm, &session, "a new recovered password")
+                .is_err()
+        );
+        reset_send_window(&mut atm);
+        request_code(&mut atm, PHONE).unwrap();
+        let issued = code(&atm);
+        let session = login(&mut atm, PHONE, &issued).unwrap();
+        atm.conn.execute_batch("CREATE TEMP TRIGGER reject_reset BEFORE UPDATE OF password_hash ON main.staff BEGIN SELECT RAISE(ABORT,'test rejected reset'); END;").unwrap();
+        assert!(
+            super::super::complete_teller_password_reset(&mut atm, &session, "a new recovered password")
+                .is_err()
+        );
+        assert!(!session.is_pin_changed(&atm).unwrap());
+        assert!(crate::admin::list_accounts(&atm, &session).is_err());
+        atm.conn.execute_batch("DROP TRIGGER temp.reject_reset;").unwrap();
+        super::super::complete_teller_password_reset(&mut atm, &session, "a new recovered password").unwrap();
+        assert!(session.is_pin_changed(&atm).unwrap());
+    }
+
+    #[test]
+    fn waiting_teller_mutation_cannot_bypass_an_account_wide_reset() {
+        let folder = std::env::temp_dir().join(format!("atm-global-password-race-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let db = folder.join("atm.db");
+        let key = folder.join("atm.key");
+        std::fs::write(&key, [7u8; 32]).unwrap();
+        let mut bank = Atm::create(&db, &key).unwrap();
+        testing::setup(&mut bank);
+        let mut worker_bank = Atm::open(&db, &key).unwrap();
+        let teller = super::super::login_admin(&mut worker_bank, ADMIN.0, ADMIN.1).unwrap();
+        let tx = bank.begin().unwrap();
+        let worker = std::thread::spawn(move || {
+            crate::admin::create_customer(
+                &mut worker_bank,
+                &teller,
+                "Ann Lee",
+                "1980-01-01",
+                "4821",
+                crate::money::Cents::from_dollars(100),
+            )
+        });
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        let mut record = load(&tx, ADMIN.0).unwrap();
+        record.is_pin_changed = Some(false);
+        record.reset_generation += 1;
+        save(&tx, ADMIN.0, &record).unwrap();
+        tx.commit().unwrap();
+        assert!(matches!(worker.join().unwrap(), Err(AtmError::NotAllowed(_))));
+        let count: i64 =
+            bank.read().unwrap().query_row("SELECT COUNT(*) FROM accounts", [], |r| r.get(0)).unwrap();
+        assert_eq!(count, 0);
+        drop(bank);
+        std::fs::remove_dir_all(folder).unwrap();
+    }
 
     fn bank() -> (Atm, AdminSession) {
         let mut atm = Atm::in_memory().unwrap();
@@ -1130,7 +1737,7 @@ mod tests {
     }
 
     #[test]
-    fn unconfirmed_replacement_preserves_old_phone() {
+    fn unconfirmed_addition_preserves_old_phone() {
         let (mut atm, admin) = registered();
         enroll(&mut atm, &admin, ADMIN.1, "+12125556789").unwrap();
         let conn = atm.read().unwrap();

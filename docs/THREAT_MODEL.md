@@ -32,25 +32,29 @@ The sealed main database pins a hash covering the private ledger schema, install
 
 ## Cell phone recovery extension
 
-Teller Admins may sign in using a registered phone number and a code delivered
-to a local text file. Enrollment and replacement require a live admin session,
-the current password, and confirmation of the delivered code. Recovery runs
-the same integrity check and issues the same admin session as password login.
+Teller OTP verification signs in before password reset. It atomically consumes
+the OTP and sets persistent account-wide `is_pin_changed=false`; the current
+OTP session alone can complete that reset. Saving a new existing teller
+password sets the flag true in the same transaction. Each verified OTP advances
+a generation, invalidating older reset approvals. Core gates block normal teller
+operations while false, across sessions and restarts. A mere code request does
+not reset the flag. Password sign-in alone cannot authorize a pending reset.
 
-`auth::recovery` encrypts verified phones in `staff.phone_enc`, alongside
-usernames and password hashes. Temporary challenges stay in sealed `meta`
-records. Version 6 banks migrate after their old seal and anchor are verified. Each six-digit code expires after five minutes, permits five attempts,
-and is consumed on success. Persistent limits allow one send per minute and
-three per fifteen-minute window per teller. Unknown numbers, throttling, and
-file delivery failures produce the same public request notice.
+Each file-backed teller gets a random simulated secondary destination stored
+in an owner-only `<bank-stem>.teller-phones.secret` JSON file and encrypted,
+sealed recovery metadata. Existing values stay stable; mismatches are refused.
+The GUI and reports display only the verified primary phone. Audit events exist
+without secondary values. Primary replacement requires the current password
+and proof of the new primary, preserving the hidden secondary.
 
-The code is written to `<normalized-phone>.txt` beside the bank database in
-both normal and demo mode. Writes replace the file atomically; Unix files
-have owner-only permissions. The database stores a keyed code hash. Code files
-are intentionally plaintext and excluded from version control. This local
-simulation trusts access to the bank's directory rather than proving control
-of an actual cell phone. Anyone able to read a code file can use that code
-until it is consumed or expires. No SMS service or new network request is used.
+Recovery sends one code to both active destinations, with shared expiry,
+attempt limits, throttling and consumption. Partial delivery invalidates both
+copies. Primary codes use phone-named `.txt` files; generated secondary codes
+use `.<bank-stem>.<teller>.secondary-otp.txt` to avoid exposing a number in its
+filename. Files are owner-only on Unix. The database stores a keyed code hash.
+This remains a local delivery simulation: filesystem access to code/secret files
+is trusted, and no SMS gateway or new network request is used. See
+[Teller OTP recovery](TELLER_PHONE_RECOVERY.md) for setup, state and privacy.
 
 A separate `bank authorities` staff account with role `authorities` receives
 an alert for each code request. Code delivery copies the complete teller text

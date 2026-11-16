@@ -36,6 +36,8 @@ source access or the programmer PIN:
    `atm.db`, `atm.key`, `atm.anchor`, `atm.processing-fees.db`,
    `atm.admin-audit.db` and `atm.admin-audit.key` together. Existing installations
    initialize the administrative store on first use after upgrade.
+   Keep the matching `<bank-stem>.teller-phones.secret` in the protected backup;
+   it contains secondary contact values and must not be pasted into reports.
 2. Enter the Authorities phone configured by the programmer with
    `cargo authorities-phone`. No programmer PIN is used to enter this terminal.
 3. Read the six-digit code from `<phone-number>.authorities-login.txt` beside
@@ -117,7 +119,8 @@ accounts 1
 - `users` includes card id/number, holder name, date of birth, holder role,
   account id/number, currency, actual balance, lock/freeze status, and the
   exact activity-log actor identifying that card.
-- `staff` includes staff id, username, role, registered phone when available,
+- `staff` includes staff id, username, role, the primary registered `phone` and
+  `verified_phone_count`; secondary numbers are not printed,
   failed-attempt/cooldown state and the exact actor identifying that staff user.
 - `accounts` includes actual balances and account status, including closed
   accounts retained for investigations.

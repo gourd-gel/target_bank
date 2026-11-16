@@ -34,10 +34,10 @@ export component StaffLoginScreen inherits Rectangle {
                     }
                     Title {
                         text: Bank.staff-role == 1 ? "Teller Admin sign-in" : "Cash Handler sign-in";
-                        hint: root.phone-mode ? "Use your registered phone and the code in its .txt file." : "Use the staff ID and password set up for this machine.";
+                        hint: root.phone-mode ? "Use your primary phone. Recovery codes are also delivered to any registered secondary number." : "Use the staff ID and password set up for this machine.";
                     }
                     id-field := Field {
-                        label: root.phone-mode ? "Registered cell phone" : "Staff ID";
+                        label: root.phone-mode ? "Primary registered cell phone" : "Staff ID";
                         placeholder: root.phone-mode ? "+12125551234" : "e.g. teller";
                         text: Bank.staff-prefill;
                         init => { if Bank.staff-prefill == "" { self.focus-input(); } }
@@ -211,10 +211,10 @@ export component SetupScreen inherits Rectangle {
 
 /// "Change my password" panel, shared by both staff consoles.
 component PasswordPanel inherits Panel {
-    Title { text: "Change my password"; hint: "You need your current password. 12 to 128 characters."; }
+    Title { text: Bank.teller-pin-reset-required ? "Reset teller password" : "Change my password"; hint: Bank.teller-pin-reset-required ? (Bank.teller-otp-reset-approved ? "OTP sign-in approved. Set a new password (12 to 128 characters) to continue." : "Your account requires a password reset. Sign out, then verify a recovery OTP.") : "You need your current password. 12 to 128 characters."; }
     HorizontalLayout {
         spacing: 14px;
-        cur := Field { label: "Current password"; password: true; }
+        cur := Field { visible: !Bank.teller-pin-reset-required; label: "Current password"; password: true; }
         new1 := Field { label: "New password"; password: true; }
         new2 := Field { label: "New password again"; password: true; }
     }
@@ -223,12 +223,14 @@ component PasswordPanel inherits Panel {
         alignment: start;
         ActionButton {
             text: "Change password";
+            enabled: !Bank.teller-pin-reset-required || Bank.teller-otp-reset-approved;
             clicked => {
                 if (Bank.change-password(cur.text, new1.text, new2.text)) { }
                 cur.clear(); new1.clear(); new2.clear();
             }
         }
     }
+    if Bank.teller-pin-reset-required: ActionButton { text: "Sign out"; kind: 2; clicked => { Bank.staff-logout(); } }
     Rectangle { vertical-stretch: 1; }
 }
 
@@ -504,7 +506,7 @@ component ServiceBanner inherits Rectangle {
 
 export component TellerScreen inherits Rectangle {
     HorizontalLayout {
-        SideNav {
+        if !Bank.teller-pin-reset-required: SideNav {
             role: "Teller Admin";
             items: ["Customer accounts", "Open an account", "Locked cards", "Daily limits", "Audit log", "Data integrity", "My password", "Exchange rates", "Holds and approvals"];
             current: Bank.teller-tab;
@@ -728,10 +730,11 @@ export component TellerScreen inherits Rectangle {
             security-settings := VerticalLayout {
                 width: parent.visible-width;
                 PasswordPanel { }
-                Panel {
-                    Title { text: "Cell phone recovery"; hint: "Codes are written to your phone-number .txt file."; }
+                if !Bank.teller-pin-reset-required: Panel {
+                    Title { text: "Cell phone recovery"; hint: "Verify a new primary phone here. The current number stays active until verification succeeds; the secondary recovery destination is preserved."; }
+                    Text { text: "Primary recovery number: " + Bank.recovery-phones; color: Palette.body; wrap: word-wrap; }
                     HorizontalLayout {
-                        recovery-phone := Field { label: "Cell phone with country code"; placeholder: "+12125551234"; }
+                        recovery-phone := Field { label: "New phone with country code"; placeholder: "Enter number privately"; password: true; }
                         recovery-password := Field { label: "Current password"; password: true; }
                         ActionButton { text: "Send code"; clicked => { Bank.phone-enroll(recovery-password.text, recovery-phone.text); recovery-password.clear(); } }
                     }

@@ -1,3 +1,10 @@
+## OTP-authorized teller password reset and hidden secondary destinations
+
+- OTP verification signs in before password reset and sets the persistent account-wide `is_pin_changed` flag false. Saving the existing teller password sets it true atomically and opens the main GUI page. Newer OTP approvals invalidate older reset permissions; all teller sessions read the same sealed state.
+- Generate a unique simulated secondary destination per file-backed teller and retain it in an owner-only, Git-ignored secret file. Verified primary replacement preserves the hidden secondary. Reject duplicate ownership across staff and Authorities.
+- Send the same recovery OTP to both verified numbers and accept either number for the teller's identity. Share expiry, attempt limits, throttling and single-use consumption; invalidate the challenge if either delivery fails.
+- Show only the primary number in teller settings and Authorities staff reports; retain registration/verification/reset audit events without secondary-number values. Generated secondary OTP copies use a neutral filename. Preserve legacy records and encrypted storage.
+
 ## Customer PIN-lock alerts and Authorities resolution
 
 - Queue encrypted, durable Authorities alerts for three failed customer PINs at sign-in, during PIN changes or at the teller counter. Include masked identity, ATM origin/time and signature; retry failed delivery through startup/customer access or the Authorities terminal.

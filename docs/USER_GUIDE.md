@@ -84,19 +84,22 @@ The command saves `bank-authorities-phone.txt` beside the database. Changes
 take effect at startup or before the next alert and are then saved encrypted
 in the database. The updated state remains sealed. Existing stored numbers remain in use if the file is absent.
 
-To register a teller number, sign in and open **My password → Cell phone
-recovery**. Enter the teller phone and current password, then click
-**Send code**. Open the phone-number `.txt` file beside the bank database,
-type its code, and click **Verify phone**. A new phone does not replace the
-old one until verified.
+To register or replace the visible primary phone, sign in and open **My password →
+Cell phone recovery**. Enter the number privately and your current password,
+click **Send code**, then enter the verification code and click **Verify phone**.
+The old primary stays active until verification succeeds. A randomly generated
+secondary number is provisioned into a protected secret file; it is not shown
+or logged. Both active destinations receive recovery OTPs.
 
-If you later forget your staff ID or password, choose **Forgot staff ID or
-password?** on the Teller Admin sign-in screen. Enter that registered phone,
-click **Send code**, and enter the code from its `.txt` file to sign in. The
-code expires after five minutes and works once. After five unsuccessful code attempts,
-request another code when allowed. Wait at least one minute between requests;
-at most three can be requested in a fifteen-minute window. This signs you in
-without changing your password.
+If you forget your staff ID or password, choose **Forgot staff ID or password?**
+and use your primary phone to request an OTP. Verifying the OTP starts a
+restricted signed-in session and resets the persistent, account-wide
+`is_pin_changed` flag to false. Set a new password twice; the old password is
+not needed. Saving it atomically sets the flag true and opens the main page.
+The flag survives logout/restart and is shared by other teller sessions; a
+newly verified recovery OTP resets it to false again. Requesting a code alone
+does not change it. See [Teller OTP recovery](TELLER_PHONE_RECOVERY.md) for the
+secret-file location, secondary delivery filename, limits and audit policy.
 
 For example, `+1 (212) 555-1234` uses `+12125551234.txt`. Both normal and
 practice mode write the code to this file. No SMS provider is required. A

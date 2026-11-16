@@ -450,6 +450,7 @@ impl App {
             Bank::set_balance,
             Bank::set_balance_note,
             Bank::set_staff_id,
+            Bank::set_recovery_phones,
             Bank::set_entry_display,
             Bank::set_confirm_title,
             Bank::set_sum_note,
@@ -512,6 +513,8 @@ impl App {
             Bank::set_integrity_ok,
             Bank::set_integrity_ran,
             Bank::set_idle_warning,
+            Bank::set_teller_pin_reset_required,
+            Bank::set_teller_otp_reset_approved,
         ] {
             clear(&bank, false);
         }
@@ -566,6 +569,17 @@ impl App {
             let was = bank.get_service_halted();
             if self.out_of_service() != was {
                 bank.set_message("".into()); // an old notice no longer applies
+            }
+            st.service_checked = Some(Instant::now());
+        }
+        if st.admin.is_some() && st.service_checked.is_none_or(|t| t.elapsed() >= SERVICE_CHECK) {
+            let status = st.admin.as_ref().unwrap().is_pin_changed(&self.atm());
+            match status {
+                Ok(changed) if bank.get_teller_pin_reset_required() == changed => {
+                    self.teller_tab_with(&mut st, 0);
+                }
+                Ok(_) => {}
+                Err(e) => self.fail(&mut st, e),
             }
             st.service_checked = Some(Instant::now());
         }

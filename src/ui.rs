@@ -509,6 +509,14 @@ fn admin_flow(atm: &mut Atm) -> Result<()> {
         let password = input::read_secret("Password: ")?;
         auth::login_admin(atm, &username, &password)?
     };
+    if !session.is_pin_changed(atm)? {
+        let new = input::read_secret("OTP approved. Set a new teller password: ")?;
+        let again = input::read_secret("New teller password again: ")?;
+        if *new != *again {
+            return Err(AtmError::InvalidInput("the two new passwords do not match"));
+        }
+        auth::complete_teller_password_reset(atm, &session, &new)?;
+    }
     service_banner(atm, &session)?;
     let result = admin_menu(atm, &session);
     let logged_out = auth::logout_admin(atm, session);
@@ -567,7 +575,7 @@ fn admin_menu(atm: &mut Atm, s: &AdminSession) -> Result<()> {
         println!(" 16) Approve a larger amount for today (customer at the counter)");
         println!(" 17) Accounts on hold for unusual activity / release");
         println!(" 18) Halt the ATM / resume service");
-        println!(" 19) Register cell phone for forgotten credentials");
+        println!(" 19) Add a recovery phone (up to two verified numbers)");
         println!("  0) Log out");
         let choice = read_choice()?;
         let result = match choice.as_str() {
@@ -601,7 +609,7 @@ fn admin_menu(atm: &mut Atm, s: &AdminSession) -> Result<()> {
             "17" => review_holds(atm, s),
             "18" => halt_or_resume(atm, s),
             "19" => {
-                let phone = input::read_line("Cell phone (with + and country code): ")?;
+                let phone = input::read_secret("New recovery phone (hidden, with + and country code): ")?;
                 let password = input::read_secret("Current password: ")?;
                 println!("{}", auth::recovery::enroll(atm, s, &password, &phone)?);
                 let code = input::read_secret("Phone verification code: ")?;

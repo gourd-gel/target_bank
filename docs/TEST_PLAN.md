@@ -411,3 +411,33 @@ complete-body HMAC and verifies that an existing Authorities OTP is unchanged.
 `tests/customer_pin_lock.rs` exercises failed delivery, restart/retry, the locked
 customer's correct-PIN denial, other-customer access, and actual Authorities
 terminal resolution with private review logging. See [Customer PIN locks](CUSTOMER_PIN_LOCK.md).
+
+## Teller OTP password reset and secret secondary contacts
+
+On file-backed setup/startup, confirm a unique simulated secondary per teller
+is written to an owner-only `<bank-stem>.teller-phones.secret` file and mirrored
+in encrypted sealed metadata. Restart and confirm stability. Reject mismatched
+secret files and duplicate ownership without printing secondary values. The
+GUI and Authorities reports show only the primary phone. Secondary OTP copies
+use `.<bank-stem>.<teller>.secondary-otp.txt`.
+
+Verify a primary (or replacement primary) through current-password and new-phone
+OTP proof. Preserve the old primary until confirmation, then preserve the
+hidden secondary when activating the new primary. Keep successful actions
+audited without secret values.
+
+Request recovery with the primary phone: both destinations receive one shared
+single-use code. Successful verification starts a restricted session and sets
+account-wide `is_pin_changed=false`; a mere request leaves it unchanged. Check
+normal teller operations are blocked in every session, including a write that
+was already waiting for the database lock. Register a new existing password
+without the old one; only commit success may set the flag true and open the
+main page. Old password sign-in must fail afterward. Confirm true persists
+across sessions and restart; a newly verified OTP resets it false again.
+Reject older OTP generations, wrong-bank/expired approvals and failed database
+writes. Confirm the GUI follows account-wide status changes.
+
+Both OTP copies share expiry, attempts and send limits. Switching numbers
+cannot bypass them. Attempt both deliveries even when the first fails; partial
+delivery invalidates the challenge. Keep existing single-number and version-6
+migration checks. See [Teller OTP recovery](TELLER_PHONE_RECOVERY.md).

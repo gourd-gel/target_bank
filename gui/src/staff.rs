@@ -29,6 +29,7 @@ mod tab {
     pub const ACCOUNTS: i32 = 0;
     pub const LOCKED: i32 = 2;
     pub const LIMITS: i32 = 3;
+    pub const SECURITY: i32 = 6;
     pub const AUDIT: i32 = 4;
     pub const RATES: i32 = 7;
     pub const HOLDS: i32 = 8;
@@ -153,7 +154,18 @@ pub fn connect(app: &Rc<App>, window: &AppWindow) {
             .ok_or(AtmError::SessionExpired)
             .and_then(|s| auth::recovery::confirm_enrollment(&mut a.atm(), s, &code));
         match result {
-            Ok(()) => a.notice("Phone verified. You can now use it to recover teller sign-in."),
+            Ok(()) => {
+                if let Some(session) = &st.admin {
+                    if let Ok(phones) = auth::recovery::registered_phones(&a.atm(), session) {
+                        a.window()
+                            .global::<Bank>()
+                            .set_recovery_phones(phones.first().cloned().unwrap_or_default().into());
+                    }
+                }
+                a.notice(
+                    "Phone added and verified. Recovery codes go to all your verified numbers (up to two).",
+                );
+            }
             Err(e) => a.error(e),
         }
     });
@@ -421,7 +433,13 @@ impl App {
         let changed = {
             let mut atm = self.atm();
             if let Some(s) = &st.admin {
-                auth::change_admin_password(&mut atm, s, current, new1)
+                s.is_pin_changed(&atm).and_then(|changed| {
+                    if !changed {
+                        auth::complete_teller_password_reset(&mut atm, s, new1)
+                    } else {
+                        auth::change_admin_password(&mut atm, s, current, new1)
+                    }
+                })
             } else if let Some(s) = &st.handler {
                 auth::change_handler_password(&mut atm, s, current, new1)
             } else {
@@ -431,6 +449,10 @@ impl App {
         match changed {
             Ok(()) => {
                 self.notice("Password changed. Use the new one next time.");
+                if self.window().global::<Bank>().get_teller_pin_reset_required() {
+                    self.teller_tab_with(&mut st, tab::ACCOUNTS);
+                    self.notice("Password reset completed. You are signed in.");
+                }
                 true
             }
             Err(AtmError::AuthFailed) => {
@@ -454,9 +476,17 @@ impl App {
     }
 
     /// Switches tab and loads its data fresh (nothing stale is shown).
-    fn teller_tab_with(&self, st: &mut State, tab: i32) {
+    pub(super) fn teller_tab_with(&self, st: &mut State, tab: i32) {
         let window = self.window();
         let bank = window.global::<Bank>();
+        let needs_reset = st.admin.as_ref().is_some_and(|s| !s.is_pin_changed(&self.atm()).unwrap_or(false));
+        bank.set_teller_pin_reset_required(needs_reset);
+        bank.set_teller_otp_reset_approved(st.admin.as_ref().is_some_and(|s| s.has_otp_reset_approval()));
+        if needs_reset {
+            bank.set_teller_tab(tab::SECURITY);
+            self.show(screen::TELLER);
+            return;
+        }
         bank.set_teller_tab(tab);
         bank.set_activity_shown(false);
         // A feed review only shows while one is waiting for approval.
@@ -468,6 +498,13 @@ impl App {
         let loaded = {
             let atm = self.atm();
             match tab {
+                tab::SECURITY => auth::recovery::registered_phones(&atm, session).map(|phones| {
+                    bank.set_recovery_phones(if phones.is_empty() {
+                        "None registered".into()
+                    } else {
+                        phones.first().cloned().unwrap_or_default().into()
+                    });
+                }),
                 tab::ACCOUNTS => review::holds(&atm, session).and_then(|holds| {
                     let held: Vec<String> = holds.into_iter().map(|h| h.account_number).collect();
                     let accounts = admin::list_accounts(&atm, session)?;

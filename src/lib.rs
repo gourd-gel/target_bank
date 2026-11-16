@@ -204,6 +204,7 @@ impl Atm {
         auth::recovery::refresh_authorities_configuration(&mut atm)?;
         revenue::migrate(&mut atm)?;
         identity::initialize(&mut atm)?;
+        auth::recovery::provision_secondary_phones(&mut atm)?;
         auth::recovery::retry_service_alert(&mut atm)?;
         customer_security::retry(&mut atm)?;
         Ok(atm)

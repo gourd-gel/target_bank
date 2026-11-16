@@ -212,8 +212,9 @@ pub fn staff(
         let role: String = r.get(2)?;
         let phone: Option<Vec<u8>> = r.get(3)?;
         let phone = phone.map(|bytes| keys::unseal("staff.phone", &name, &bytes)).transpose()?;
+        let phones = crate::auth::recovery::staff_phones(&conn, &name)?;
         out.push(json!({"staff_id": r.get::<_, i64>(0)?, "username": name, "role": role,
-            "actor": format!("{role}:{name}"), "phone": phone, "failed_attempts": r.get::<_, i64>(4)?, "cooldown_until": r.get::<_, Option<String>>(5)?}));
+            "actor": format!("{role}:{name}"), "phone": phone, "verified_phone_count": phones.len(), "failed_attempts": r.get::<_, i64>(4)?, "cooldown_until": r.get::<_, Option<String>>(5)?}));
     }
     Ok(out)
 }

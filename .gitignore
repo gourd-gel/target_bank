@@ -11,6 +11,8 @@
 /bank-authorities-phone.txt
 # /.programmer-pin.secret
 /numbers.txt
+*.teller-phones.secret
+*.secondary-otp.txt
 /programmer-pin.secret.example
 /bank-authorities-phone.txt.example.txt
 

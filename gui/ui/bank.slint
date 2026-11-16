@@ -183,6 +183,9 @@ export global Bank {
     in-out property <string> service-reason;
     /// What the automatic check at this sign-in found ("" = all good).
     in-out property <string> signin-problem;
+    in-out property <string> recovery-phones;
+    in-out property <bool> teller-pin-reset-required: false;
+    in-out property <bool> teller-otp-reset-approved: false;
 
     in-out property <int> cash-tab: 0;
     in-out property <[[string]]> cash-rows;
