@@ -6,7 +6,7 @@ the three booth roles. You don't need to know any code to follow it.
 **Access model:** system users have access only to the GUI. Only GUI user activities are traced in the user activity audit; transaction amounts are the amounts users or tellers requested, before fees. The programmable
 interface, source code, Cargo commands, and maintenance tools are accessible
 only to the programmer. Command-line examples in this guide are programmer
-instructions; they are not part of the GUI users' workflow.
+instructions; they are not part of the GUI users' workflow. Bank Authorities uses a separately provided off-booth terminal, documented in [Bank Authorities activities](BANK_AUTHORITIES.md).
 
 - [1. Before you start](#1-before-you-start)
 - [2. Using the screens](#2-using-the-screens)
@@ -778,7 +778,7 @@ Withdrawals, deposits, transfers, and guardian transfers incur a **3% processing
 
 ## Bank Authorities: revenue account
 
-Bank Authorities is a backend-only role and does not use the booth. The GUI and booth CLI expose only Customer, Teller Admin and Cash Handler access. Authorities alerts, authenticated revenue views and reasoned credit/debit adjustments remain available through the core library APIs. Revenue continues to collect processing fees automatically. Revenue credits/debits remain recorded for reconciliation. Follow [Bank Authorities sign-in](PROCESSING_FEES.md#bank-authorities-sign-in-code-level) for phone setup, OTP verification, revenue API access and sign-out.
+Bank Authorities is a backend-only role and does not use the booth. The GUI and booth CLI expose only Customer, Teller Admin and Cash Handler access. Authorities alerts, database inspection, user/teller tracing, authenticated revenue views and reasoned credit/debit adjustments are available through the separate terminal and core library APIs. Revenue continues to collect processing fees automatically. Revenue credits/debits remain recorded for reconciliation. Follow [Bank Authorities terminal activities](BANK_AUTHORITIES.md) for sign-in and inspection commands, or [Authorities sign-in APIs](PROCESSING_FEES.md#bank-authorities-sign-in-code-level) for code integration.
 
 
 ## ATM origin on teller OTP alerts
@@ -789,3 +789,8 @@ Bank Authorities alerts now identify the originating ATM with its configured loc
 ## User activity audit amounts
 
 Only activities initiated through the deployed GUI are traced in the user activity audit, including the security responses to those requests. The GUI is the only user access channel. Transaction entries show the amount requested by the user or teller, before processing, ATM or exchange fees. Processing charges are available through the bank revenue account; receipts and account balances show the actual financial result. A $100 deposit is listed as a $100 deposit, even though the customer receives $97 after the 3% processing fee. A $100 transfer is listed as $100, even though its sender pays $103. Fee and revenue-adjustment records are not separate GUI activity rows.
+
+
+## Administrative audit and privacy
+
+Programmer and Bank Authorities audit records are saved separately in `atm.admin-audit.db` and are readable only through authenticated Authorities APIs. The Authorities terminal provides `admin-audit` and paged `admin-audit 1` inspection. **These records can affect the privacy of people acting as Programmer or Bank Authorities** by revealing sign-in attempts, timing, maintenance and inspection targets. See [Administrative audit](ADMINISTRATIVE_AUDIT.md) for access controls, recorded fields and storage details. The GUI activity audit retains requested transaction amounts.

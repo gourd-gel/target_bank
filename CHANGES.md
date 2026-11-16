@@ -1,3 +1,15 @@
+## Authorities-only administrative audit
+
+- Record Programmer and Authorities activity in separate encrypted `atm.admin-audit.db` files with append-only/HMAC checks and sealed bank checkpoints. Authorities sessions alone can read decrypted events.
+- Add `admin-audit` and administrative database inspection to the separate terminal. Preserve requested-amount GUI activity and bank financial records.
+- Explicitly document the privacy impact on people acting in these roles, protected credential fields, service file custody and coordinated backups.
+
+## Bank Authorities terminal inspection
+
+- Add the separate `authorities-tools` terminal (`cargo authorities`) with OTP sign-in, database/schema/table reports, decrypted user/staff identification, account/actor tracing, financial and revenue reports, and integrity checks.
+- Gate all reports with Authorities sessions; keep GUI activity amounts unchanged, protect credentials and programmer-only fee keys, and preserve existing audit data.
+- Document sign-in and exact inspection commands in `docs/BANK_AUTHORITIES.md`.
+
 ## GUI user activity audit
 
 - Document the deployed GUI as the sole user access channel and trace GUI user activities in the activity audit.

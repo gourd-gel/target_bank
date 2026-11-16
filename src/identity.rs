@@ -74,6 +74,13 @@ pub(crate) fn origin(conn: &Connection, bank_id: u64) -> Result<Origin> {
         if origin.location.as_deref() != Some(&location) {
             origin.location = Some(location);
             save(conn, &origin)?;
+            crate::administration::append(
+                conn,
+                "programmer",
+                "atm_location_import",
+                "applied",
+                origin.location.as_deref().unwrap_or(""),
+            )?;
         }
     }
     Ok(Origin { id: origin.id, location: origin.location.unwrap_or_else(|| "Not configured".into()) })
@@ -100,7 +107,13 @@ pub fn write_location_configuration(
     secret_file: &Path,
     pin: &str,
 ) -> Result<()> {
-    crate::auth::recovery::verify_programmer_pin(secret_file, pin)?;
-    let location = validate_location(location)?;
-    crate::auth::recovery::deliver(&directory.join(LOCATION_CONFIG_FILE), location)
+    crate::administration::programmer_action(
+        directory,
+        "atm_location_change",
+        crate::auth::recovery::verify_programmer_pin(secret_file, pin),
+        || {
+            let location = validate_location(location)?;
+            crate::auth::recovery::deliver(&directory.join(LOCATION_CONFIG_FILE), location)
+        },
+    )
 }

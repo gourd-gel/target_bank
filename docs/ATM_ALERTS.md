@@ -29,4 +29,4 @@ The final signature line is excluded from the signed body. The tag uses a purpos
 
 This is shared-key authentication, not a public-key signature or hardware attestation. Someone holding the runtime key can authenticate messages. The location is the programmer's configured label. Restoring or cloning the complete bank database preserves its ATM ID; independent physical terminals should use separately provisioned bank installations rather than cloned identities.
 
-Alerts continue to use the existing local phone-number `.txt` delivery simulation; this change does not send actual SMS. Keep the identity metadata with the existing coordinated bank/fee database and anchor backups.
+Alerts continue to use the existing local phone-number `.txt` delivery simulation; this change does not send actual SMS. Keep identity metadata with the coordinated bank/fee/administrative database, key and anchor backups described in [Administrative audit storage](ADMINISTRATIVE_AUDIT.md#storage-and-protection).

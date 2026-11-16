@@ -32,6 +32,11 @@ name = "bank-atm-location"
 path = "src/bin/bank-atm-location.rs"
 required-features = ["programmer-tools"]
 
+[[bin]]
+name = "bank-oversight"
+path = "src/bin/bank-oversight.rs"
+required-features = ["authorities-tools"]
+
 # One build folder and one Cargo.lock for the core, the CLI and the GUI.
 # `cargo build` here builds the core + CLI only; the GUI is `-p atm-gui`.
 [workspace]
@@ -44,6 +49,8 @@ default-members = ["."]
 demo = []
 # Source-workspace maintenance command, excluded from normal GUI builds.
 programmer-tools = []
+# Off-booth Authorities terminal; excluded from normal booth builds.
+authorities-tools = []
 # TEST BUILDS ONLY: adds `--demo --break-integrity`, which makes one demo
 # balance wrong on purpose so the sign-in check and out-of-service mode can be
 # seen working. Not in normal or plain demo builds. Implies demo.

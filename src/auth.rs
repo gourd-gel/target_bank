@@ -192,7 +192,7 @@ pub struct HandlerSession {
     clock: IdleClock,
 }
 
-/// Bank Authorities can inspect the revenue account, without teller or cash privileges.
+/// Bank Authorities can inspect databases and trace activity, without teller or cash privileges.
 pub struct AuthoritiesSession {
     bank: u64,
     username: String,
@@ -819,13 +819,22 @@ pub fn logout_handler(atm: &mut Atm, session: HandlerSession) -> Result<()> {
     log_logout(atm, &session, &session.actor(), None)
 }
 
-/// End an Authorities session without recording administrative access in the ATM audit.
+/// End an Authorities session and record it in the private administrative audit.
 pub fn logout_authorities(atm: &mut Atm, session: AuthoritiesSession) -> Result<()> {
+    let expired = session.is_expired();
     session.end();
     if session.bank != atm.id {
         return Err(AtmError::SessionExpired);
     }
-    Ok(())
+    let tx = atm.begin()?;
+    crate::administration::append(
+        &tx,
+        &session.actor(),
+        "sign_out",
+        if expired { "expired" } else { "succeeded" },
+        "",
+    )?;
+    tx.commit()
 }
 
 // ---------------------------------------------------------------------------

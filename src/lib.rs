@@ -67,6 +67,7 @@
 #![forbid(unsafe_code)]
 
 pub mod admin;
+pub mod administration;
 mod anchor;
 pub mod audit;
 pub mod auth;
@@ -83,6 +84,7 @@ pub mod identity;
 pub mod input;
 pub mod keys;
 pub mod money;
+pub mod oversight;
 pub mod processing;
 pub mod rate_feed;
 pub mod revenue;
@@ -185,6 +187,7 @@ impl Atm {
             anchor.advance(counter, &mac)?; // a crash right after a commit leaves it one behind
         }
         processing::attach(&conn, Some(db_path))?;
+        administration::attach(&conn, Some(db_path))?;
         audit::check_clock(&conn)?; // refuse to run if the clock went backwards
         auth::warm_up(); // the first failed login then takes as long as any other
         let mut atm = Atm {
@@ -215,6 +218,7 @@ impl Atm {
         let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let counter = seal::check(&tx)?;
         processing::check(&tx)?;
+        administration::check(&tx)?;
         if counter < self.seen.get() {
             return Err(AtmError::RolledBack);
         }
@@ -234,6 +238,7 @@ impl Atm {
         let tx = self.conn.unchecked_transaction()?;
         let counter = seal::check(&tx)?;
         processing::check(&tx)?;
+        administration::check(&tx)?;
         if counter < self.seen.get() {
             return Err(AtmError::RolledBack);
         }
@@ -248,6 +253,7 @@ impl Atm {
         let conn = db::open_in_memory()?;
         let counter = seal::check(&conn)?;
         processing::attach(&conn, None)?;
+        administration::attach(&conn, None)?;
         let mut atm = Atm {
             conn,
             id: new_id()?,
@@ -305,6 +311,7 @@ impl Tx<'_> {
     pub(crate) fn commit(self) -> Result<()> {
         let next = self.counter + 1;
         processing::seal(&self.tx)?;
+        administration::checkpoint(&self.tx)?;
         let mac = seal::write(&self.tx, next)?;
         self.tx.commit()?;
         self.seen.set(next);

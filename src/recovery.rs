@@ -203,9 +203,15 @@ pub fn write_authorities_configuration(
     secret_file: &std::path::Path,
     pin: &str,
 ) -> Result<()> {
-    verify_programmer_pin(secret_file, pin)?;
-    let phone = phone_number(phone)?;
-    deliver(&directory.join(AUTHORITIES_CONFIG_FILE), &phone)
+    crate::administration::programmer_action(
+        directory,
+        "authorities_phone_change",
+        verify_programmer_pin(secret_file, pin),
+        || {
+            let phone = phone_number(phone)?;
+            deliver(&directory.join(AUTHORITIES_CONFIG_FILE), &phone)
+        },
+    )
 }
 
 #[cfg(feature = "programmer-tools")]
@@ -241,6 +247,13 @@ fn configure_authorities_phone(conn: &Connection, phone: &str) -> Result<bool> {
         return Ok(false);
     }
     put_phone(conn, AUTHORITIES, &phone)?;
+    crate::administration::append(
+        conn,
+        "programmer",
+        "authorities_phone_import",
+        "applied",
+        "Authorities phone configuration imported",
+    )?;
     Ok(true)
 }
 
@@ -442,19 +455,38 @@ pub fn request_authorities_code(atm: &mut Atm, phone: &str) -> Result<String> {
     let valid = phone_number(phone).ok().filter(|phone| expected.as_deref() == Some(phone));
     if let Some(phone) = valid {
         let mut record = load(&tx, AUTHORITIES)?;
-        if can_send(&record) {
-            // Challenge state and throttling persist, without writing a business audit event.
-            let _ = start(&tx, bank_id, &mut record, &phone, "authorities-login")?;
+        let outcome = if can_send(&record) {
+            let (_, delivered) = start(&tx, bank_id, &mut record, &phone, "authorities-login")?;
             save(&tx, AUTHORITIES, &record)?;
-        }
+            if delivered.is_ok() { "code_delivered" } else { "delivery_failed" }
+        } else {
+            "throttled"
+        };
+        crate::administration::append(&tx, "authorities:bank authorities", "code_request", outcome, "")?;
+    } else {
+        crate::administration::append(&tx, "authorities:unverified", "code_request", "rejected", "")?;
     }
     tx.commit()?;
     Ok("If registered to Bank Authorities, the code is in <phone-number>.authorities-login.txt beside the bank database. It expires in 5 minutes; wait 60 seconds before requesting another.".into())
 }
 
 pub fn login_authorities(atm: &mut Atm, phone: &str, code: &str) -> Result<AuthoritiesSession> {
-    let phone = phone_number(phone).map_err(|_| AtmError::AuthFailed)?;
+    let parsed = phone_number(phone);
     let tx = atm.begin()?;
+    let phone = match parsed {
+        Ok(phone) => phone,
+        Err(_) => {
+            crate::administration::append(
+                &tx,
+                "authorities:unverified",
+                "sign_in",
+                "failed",
+                "invalid phone format",
+            )?;
+            tx.commit()?;
+            return Err(AtmError::AuthFailed);
+        }
+    };
     let is_authorities: bool = tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM staff WHERE username = ?1 AND role = 'authorities')",
         [AUTHORITIES],
@@ -465,6 +497,13 @@ pub fn login_authorities(atm: &mut Atm, phone: &str, code: &str) -> Result<Autho
         && staff_phone(&tx, AUTHORITIES)?.as_deref() == Some(&phone)
         && check(&mut record, &phone, code, "authorities-login")?;
     save(&tx, AUTHORITIES, &record)?;
+    crate::administration::append(
+        &tx,
+        "authorities:bank authorities",
+        "sign_in",
+        if approved { "succeeded" } else { "failed" },
+        "",
+    )?;
     tx.commit()?;
     if !approved {
         return Err(AtmError::AuthFailed);

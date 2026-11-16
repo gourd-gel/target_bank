@@ -18,9 +18,8 @@ fn write_new(path: &Path, bytes: &[u8], private: bool) -> Result<(), Box<dyn std
     Ok(())
 }
 
-fn run() -> Result<(), Box<dyn std::error::Error>> {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    match args.as_slice() {
+fn perform(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    match args {
         [command, db, private] if command == "provision" => {
             let public = atm::processing::public_key_path(Path::new(db));
             if Path::new(private).exists() || public.exists() { return Err("key file already exists; refusing to overwrite".into()); }
@@ -51,6 +50,37 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     Ok(())
 }
+fn run() -> Result<(), Box<dyn std::error::Error>> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let (action, bank) = match args.as_slice() {
+        [command, db, _] if command == "provision" => ("fee_key_provision", std::path::PathBuf::from(db)),
+        [command, db, _] if command == "read" => {
+            let path = Path::new(db);
+            let base = path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .and_then(|s| s.strip_suffix(".processing-fees.db"))
+                .unwrap_or("atm");
+            ("encrypted_fee_read", path.with_file_name(format!("{base}.db")))
+        }
+        _ => return perform(&args),
+    };
+    atm::administration::programmer_event(&bank, action, "requested", "")?;
+    let result = perform(&args);
+    let logged = atm::administration::programmer_event(
+        &bank,
+        action,
+        if result.is_ok() { "succeeded" } else { "failed" },
+        "",
+    );
+    match (result, logged) {
+        (Ok(()), Err(e)) => {
+            Err(format!("Operation completed, but administrative audit completion failed: {e}").into())
+        }
+        (result, _) => result,
+    }
+}
+
 fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,

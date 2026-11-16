@@ -39,7 +39,7 @@ The bank can access the ciphertext file as application owner and inspect process
 
 Both databases commit in one SQLite transaction using DELETE rollback journals and FULL synchronization. A failure rolls back balances, cash, audit entries, and private records together. The bank seal includes a hash of the separate database schema, public key, and encrypted rows; missing or changed data stops operations.
 
-Back up and restore **both databases and the matching `atm.anchor` together** from a consistent snapshot while the ATM is stopped. Keep `atm.key` and the programmer private key in their respective custody. The offline tool decrypts records; the running ATM supplies sealed-state integrity and rollback checks.
+Back up and restore **all three databases (`atm.db`, `atm.processing-fees.db`, and `atm.admin-audit.db`) and the matching `atm.anchor` together** from a consistent snapshot while the ATM is stopped. Include `atm.key` and `atm.admin-audit.key` in the protected service backup, and keep the programmer private key in its separate custody. The offline tool decrypts records; the running ATM supplies sealed-state integrity and rollback checks.
 
 
 ## Bank revenue account
@@ -50,7 +50,7 @@ On upgrade, fees already recorded as `processing_fee` are credited to revenue on
 
 Bank Authorities is a **backend-only role**. There is no Authorities sign-in, menu, dashboard, session or revenue callback in the booth GUI, and no Authorities option in the booth CLI. An authorized code-level integration uses `auth::recovery::request_authorities_code` and `auth::recovery::login_authorities` with the separately configured authorities phone to obtain an `AuthoritiesSession`. The session is required by `revenue::balances`, `revenue::history` and `revenue::adjust`; `auth::logout_authorities` ends it.
 
-Phone configuration remains programmer-managed through `cargo authorities-phone`. Codes are delivered to `<phone-number>.authorities-login.txt`, separately from alert messages. Five-minute expiry, five attempts, single use, and one-per-minute / three-per-fifteen-minute send limits remain enforced. This continues the local text-file phone simulation. A separate authorities application can use these APIs; none is included in the booth.
+Phone configuration remains programmer-managed through `cargo authorities-phone`. Codes are delivered to `<phone-number>.authorities-login.txt`, separately from alert messages. Five-minute expiry, five attempts, single use, and one-per-minute / three-per-fifteen-minute send limits remain enforced. This continues the local text-file phone simulation. The separate [Authorities inspection terminal](BANK_AUTHORITIES.md) uses these APIs outside the booth.
 
 Authorities can view currency balances and paged history, and record **credit or debit adjustments with a required reason**. Debits cannot overdraw revenue. Adjustments change the internal revenue balance only; they do not dispense cash or transfer money to a customer. Every adjustment records the authorities actor, amount, currency, timestamp, reference and reason. Revenue and internal financial entries remain append-only. Corrections are recorded as new entries, rather than overwriting history.
 
@@ -59,7 +59,7 @@ Tellers, Cash Handlers and customers have no revenue management access. Authorit
 
 ## Bank Authorities sign-in (code level)
 
-Authorities authenticate through a trusted integration outside the booth. There is no Authorities login in the ATM GUI or booth CLI, and no separate authorities application is bundled.
+Authorities authenticate outside the booth. Use the separate [Bank Authorities terminal](BANK_AUTHORITIES.md) with `cargo authorities --directory /path/to/bank-folder` for database inspection, user/teller tracing, audit and revenue reports, and integrity checks. There is no Authorities login in the ATM GUI or booth CLI. The API-level flow is documented below.
 
 1. **Configure the Authorities phone.** From the programmer source workspace, run the following with the actual Authorities number and bank folder:
 
@@ -69,7 +69,7 @@ Authorities authenticate through a trusted integration outside the booth. There 
 
    Enter the programmer PIN at the hidden prompt. The number above is an example. Keep `.programmer-pin.secret` in the programmer workspace; it is not given to the bank. First-run staff setup must have created the Authorities role before sign-in.
 
-2. **Open the existing bank from the trusted integration.** Use `Atm::open` with the matching bank database and `atm.key`. The matching processing-fee database and anchor must be available too. This is access to the existing bank, not creation of a new bank.
+2. **Open the existing bank from the trusted integration.** Use `Atm::open` with the matching bank database and `atm.key`. The matching processing-fee database, administrative audit database/key and bank anchor must be available too. This is access to the existing bank, not creation of a new bank.
 3. **Request a code.** Call `auth::recovery::request_authorities_code(&mut bank, phone)` with the configured Authorities phone. The generic response does not confirm registration or delivery.
 4. **Obtain and enter the code.** In this local-file simulation, read `<phone-number>.authorities-login.txt` beside the bank database. For the example number, the file is `+12125550199.authorities-login.txt`. The plain `<phone-number>.txt` file contains teller alerts and is not the Authorities sign-in code file. Call `auth::recovery::login_authorities(&mut bank, phone, code)` to receive an `AuthoritiesSession`.
 5. **Access revenue using that session.** Call `revenue::balances`, `revenue::history` (page 0 is newest), or `revenue::adjust`. Adjustments require a supported currency, positive amount, credit/debit direction and a reason. Every adjustment is recorded in the revenue ledger.
@@ -101,3 +101,8 @@ fn authorities_revenue(bank: &mut Atm, phone: &str) -> atm::error::Result<()> {
 ```
 
 Codes expire after five minutes, allow five verification attempts and work only once. Request at most one per minute and three per fifteen-minute window. A teller phone/code cannot produce an Authorities session, and an Authorities session grants no teller or Cash Handler permissions. If sign-in fails, check the configured number, code-file suffix, expiry and resend limits; request another code after the applicable wait. See [ATM origin alerts](ATM_ALERTS.md) for notification location and signature details.
+
+
+## Related administrative records
+
+Authorities authentication and inspection, and Programmer maintenance, are recorded separately in `atm.admin-audit.db`. Access requires an Authorities session. These records can affect the privacy of people in those roles; see [Administrative audit and privacy](ADMINISTRATIVE_AUDIT.md). Revenue and GUI activity amounts retain their existing accounting/presentation rules. Include the administrative database/key in coordinated backups.

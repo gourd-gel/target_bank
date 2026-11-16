@@ -121,6 +121,13 @@ pub fn adjust(
         "INSERT INTO revenue_ledger(audit_seq, currency, delta_cents) VALUES (?1, ?2, ?3)",
         params![reference, currency.code(), delta],
     )?;
+    crate::administration::append(
+        &tx,
+        &session.actor(),
+        "revenue_adjustment",
+        "succeeded",
+        &format!("{} {label} {}: {reason}; financial reference #{reference}", currency.code(), amount),
+    )?;
     tx.commit()?;
     Ok(reference)
 }
@@ -192,6 +199,7 @@ pub(crate) fn credit_fee(conn: &Connection, reference: i64, currency: Currency, 
 }
 
 pub fn balances(atm: &Atm, session: &AuthoritiesSession) -> Result<Vec<RevenueBalance>> {
+    crate::administration::access(atm, session, "revenue_balances", "")?;
     let conn = atm.read()?;
     atm.admit(session)?;
     let mut stmt = conn.prepare("SELECT currency, balance_cents FROM bank_revenue ORDER BY currency")?;
@@ -204,6 +212,7 @@ pub fn balances(atm: &Atm, session: &AuthoritiesSession) -> Result<Vec<RevenueBa
 }
 
 pub fn history(atm: &Atm, session: &AuthoritiesSession, page: u32) -> Result<Vec<RevenueEntry>> {
+    crate::administration::access(atm, session, "revenue_history", &format!("page={page}"))?;
     let conn = atm.read()?;
     atm.admit(session)?;
     let mut stmt = conn.prepare(

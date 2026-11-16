@@ -2,7 +2,7 @@
 
 A secure ATM simulation written in Rust for three booth roles:
 **Customers**, **Teller Admins**, and **Cash Handlers**. **Bank Authorities** is
-a backend-only role for alerts and revenue management. The booth has a desktop GUI
+a backend role with a separate terminal for investigation and revenue management. The booth has a desktop GUI
 (Slint) and a command-line version. Both are thin front ends over one library
 (`src/`) that enforces every rule. All data is stored in SQLite.
 
@@ -148,9 +148,16 @@ The PIN is entered at the prompt, never as a command-line argument.
 (`.programmer-pin.secret`). It is not handed over to the bank, and neither
 it nor its provisioning example is included in the bank's GUI delivery.
 The programmer uses this key only when the bank requests programmer
-intervention. Bank staff receive the GUI and do not use maintenance keys
+intervention. Booth staff receive the GUI and do not use maintenance keys
 or Cargo commands. The ATM's `atm.key` remains a required runtime file for
 the GUI.
+
+Bank Authorities can inspect databases, trace user/teller activity and check integrity
+from a separate terminal: `cargo authorities --directory /path/to/bank-folder`.
+See [Authorities terminal commands](docs/BANK_AUTHORITIES.md) for sign-in and inspection.
+Programmer and Authorities activity is stored separately in `atm.admin-audit.db`,
+readable through Authorities-only APIs. These records can affect the privacy of
+people in those roles; see [Administrative audit privacy](docs/ADMINISTRATIVE_AUDIT.md).
 
 Bank Authorities teller OTP alerts include the ATM location, persistent ID, UTC time,
 and an authenticated signature. Configure the location with `cargo atm-location`.
