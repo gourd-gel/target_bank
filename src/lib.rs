@@ -183,14 +183,17 @@ impl Atm {
         }
         audit::check_clock(&conn)?; // refuse to run if the clock went backwards
         auth::warm_up(); // the first failed login then takes as long as any other
-        Ok(Atm {
+        let mut atm = Atm {
             conn,
             id: new_id()?,
             anchor: Some(anchor),
             seen: Cell::new(counter),
             anchor_behind: Cell::new(false),
             unknown_cards: HashMap::new(),
-        })
+        };
+        auth::recovery::migrate_staff(&mut atm)?;
+        auth::recovery::refresh_authorities_configuration(&mut atm)?;
+        Ok(atm)
     }
 
     /// True until first-run setup has created the Teller Admin and Cash Handler.

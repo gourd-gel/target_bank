@@ -21,6 +21,10 @@ use std::cell::Cell;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
+/// Phone enrollment and teller sign-in with a one-time code.
+#[path = "recovery.rs"]
+pub mod recovery;
+
 /// Spec: 3 consecutive failed PINs lock the card.
 pub const MAX_PIN_ATTEMPTS: i64 = 3;
 /// Staff: after 3 failures each further failure pauses that login, starting at
@@ -808,6 +812,7 @@ pub fn first_run_setup(
     let admin_hash = hash_secret(admin_password, &staff_identity(admin_username, "admin"))?;
     let handler_hash = hash_secret(handler_password, &staff_identity(handler_username, "handler"))?;
 
+    let bank_id = atm.id;
     let tx = atm.begin()?;
     if db::is_initialized(&tx)? {
         return Err(AtmError::NotAllowed("this machine has already been set up"));
@@ -820,6 +825,8 @@ pub fn first_run_setup(
         "INSERT INTO staff (username, role, password_hash) VALUES (?1, 'handler', ?2)",
         params![handler_username, handler_hash],
     )?;
+    recovery::create_authorities(&tx)?;
+    recovery::apply_authorities_configuration(&tx, bank_id)?;
     log(&tx, "system", Action::Setup, None, "first-run setup: staff accounts created")?;
     tx.commit()?;
     Ok(())

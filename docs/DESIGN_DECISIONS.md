@@ -53,8 +53,8 @@ secret key, section 4) and `atm.anchor` (the newest seal, below).
 - **Nothing to install.** No server, no Docker, no database password. The
   installation score depends on the instructor getting it running quickly.
 - **No network port.** Nothing listens, so nothing on the network can
-  connect to the ATM. (The program's only network use is one outbound
-  request that a teller starts, section 20.)
+  connect to the ATM. Outbound HTTPS supports the teller's rate request
+  (section 20); phone authentication codes are delivered to local text files.
 - **Rules in the database too.** CHECK constraints (balances from 0 to
   `Cents::MAX`, valid bill types, flags 0 or 1), and triggers that make the
   audit log append-only, catch bugs even if the code had one.
@@ -1328,3 +1328,33 @@ We didn't build this because the handout asks for one ATM, and a server
 would add a second program to secure. The library is already split so the
 same checked functions could run on the server.
 
+
+
+## 31. Programmer control of the authorities phone
+
+System users have access only to the GUI. The programmable interface,
+source workspace, Cargo commands, and maintenance tools are accessible only
+to the programmer. `cargo authorities-phone <+PHONE>` runs the separate
+`bank-authorities` binary, enabled only by `programmer-tools`, so changing
+this notification destination does not require a teller or bank account.
+It requires the separate programmer PIN `0000`, entered at a hidden prompt
+and checked against the salted Argon2id hash in `.programmer-pin.secret` in
+the source workspace. This hash is outside the database and the actual
+secret file is git-ignored. Missing/corrupt files and wrong or empty PIN
+input fail closed; no default secret is recreated automatically.
+
+The programmer retains this maintenance key and does not hand it over to the
+bank. The secret file and its provisioning example are excluded from GUI
+handover. The key is used only when the bank requests programmer intervention;
+bank staff operate the GUI without possessing the maintenance key.
+
+It validates and atomically writes `bank-authorities-phone.txt` in the bank
+folder; `--directory` supports a GUI launched from another working directory.
+
+The command can run before setup and does not initialize or open a bank.
+At startup or before each alert, the app imports the number into the encrypted
+staff record through its normal sealed transaction and signed audit log.
+This supports an already-running GUI without exposing a GUI setting or a
+public network endpoint. Teller phone enrollment keeps its existing password
+and code verification. The authorities number must be separate to prevent
+its alert file from overwriting a teller's code file.

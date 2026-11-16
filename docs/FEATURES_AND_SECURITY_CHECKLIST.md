@@ -180,7 +180,12 @@ and attack surface.
 | Cards from other banks with an ATM fee | – | – | – | ✓ (new) |
 | Card numbers masked while typing | – | – | – | ✓ (new) |
 | Charges shown added up (withdrawal + fees = total) | – | – | – | ✓ (new) |
-| Daily rate check over HTTPS, approved by a teller | – | – | – | ✓ (new; the only network use, GUI only) |
+| Daily rate check over HTTPS, approved by a teller | – | – | – | ✓ |
+| Teller cell phone recovery with verified enrollment, expiring codes and attempt/send limits | – | – | – | ✓ (GUI and CLI; codes delivered to phone-number .txt files) |
+| Staff phone records and Bank Authorities alerts on phone-verification attempts | – | – | – | ✓ (encrypted staff phones, automatic migration, exact alert header and text copy) |
+| Programmer changes authorities phone through Cargo with a separate secret-file PIN | – | – | – | ✓ (`cargo authorities-phone`; PIN `0000`, salted hash outside database, feature-gated binary, no GUI control) |
+| GUI-only system users; programmable interface restricted to the programmer | – | – | – | ✓ (documented deployment assumption and maintenance trust boundary) |
+| Programmer retains maintenance key; used only at the bank’s request for intervention | – | – | – | ✓ (secret and provisioning example excluded from GUI handover) |
 
 **Features from The-Bank-of-CCNY deliberately left out**, with the reason to
 give if asked:
@@ -190,7 +195,7 @@ give if asked:
 | Collect SSNs (stored as an HMAC fingerprint) | The spec doesn't need them. Data you don't collect can't leak (data minimisation) |
 | Teller resets a customer's PIN | A teller who can set PINs can take over accounts. Customers choose their own PIN; tellers only unlock |
 | Teller edits customer name/DOB | Same insider risk; name and DOB are what the teller checks ID against |
-| Teller creates more staff logins | One admin able to mint admins = hidden persistent access. Setup creates exactly one of each |
+| Teller creates more privileged staff logins | One admin able to mint admins = hidden persistent access. Setup creates one teller and one handler; the authorities notification account cannot perform their actions |
 | Delete a customer | Deleting breaks the audit trail and frees the number for reuse. Close does neither |
 
 **0.7.0: the teammate's Integration branch and the security review.** A

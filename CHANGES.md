@@ -1,3 +1,35 @@
+# Unreleased: phone recovery and programmer maintenance
+
+- Teller Admins can enroll a cell phone and sign in using a six-digit code
+  delivered to `<phone-number>.txt` beside the bank database. Codes expire
+  after five minutes, work once, and have attempt and resend limits.
+- Verified numbers are encrypted in `staff.phone_enc`, beside staff usernames
+  and password hashes. Sealed version 6 banks migrate to version 7 after
+  seal/anchor verification, preserving credentials, staff IDs, and counters.
+- A `bank authorities` notification account receives the requested alert
+  header and a copy of each delivered verification text. Invalid, unknown,
+  and throttled requests generate an alert without issuing a new code.
+  Authorities delivery failures prevent valid code issuance.
+- Documented the access model: system users have access only to the GUI;
+  the programmable interface, source code, Cargo commands, and maintenance
+  tools are accessible only to the programmer.
+- The programmer runs `cargo authorities-phone <+PHONE>` to set or replace
+  the authorities number without teller/bank credentials. A hidden prompt
+  requires programmer PIN `0000`, checked against a salted Argon2id hash in
+  the git-ignored `.programmer-pin.secret` outside the database. Wrong or
+  empty PIN input and missing/corrupt secret files prevent the change. The
+  hashed provisioning example is provided for fresh checkouts. `--directory`
+  selects the bank folder. The command writes the local configuration file;
+  the app imports it at startup or before its next alert and records the
+  change in the signed log. `programmer-tools` enables the separate
+  `bank-authorities` binary; normal GUI builds exclude it. No authorities
+  configuration control is exposed to GUI users.
+- Documented key custody: the programmer retains `.programmer-pin.secret`;
+  the maintenance key and its provisioning example are not handed over to
+  the bank. The key is used only when the bank requests programmer intervention.
+- Added file-delivery, phone migration, alert, and programmer-command tests;
+  updated the README, user guide, security notes, and manual test plan.
+
 # Changes in 0.9.0
 
 The final submission round:

@@ -1,5 +1,59 @@
 # Threat model: Bank of CCNY ATM
 
+## Cell phone recovery extension
+
+Teller Admins may sign in using a registered phone number and a code delivered
+to a local text file. Enrollment and replacement require a live admin session,
+the current password, and confirmation of the delivered code. Recovery runs
+the same integrity check and issues the same admin session as password login.
+
+`auth::recovery` encrypts verified phones in `staff.phone_enc`, alongside
+usernames and password hashes. Temporary challenges stay in sealed `meta`
+records. Version 6 banks migrate after their old seal and anchor are verified. Each six-digit code expires after five minutes, permits five attempts,
+and is consumed on success. Persistent limits allow one send per minute and
+three per fifteen-minute window per teller. Unknown numbers, throttling, and
+file delivery failures produce the same public request notice.
+
+The code is written to `<normalized-phone>.txt` beside the bank database in
+both normal and demo mode. Writes replace the file atomically; Unix files
+have owner-only permissions. The database stores a keyed code hash. Code files
+are intentionally plaintext and excluded from version control. This local
+simulation trusts access to the bank's directory rather than proving control
+of an actual cell phone. Anyone able to read a code file can use that code
+until it is consumed or expires. No SMS service or new network request is used.
+
+A separate `bank authorities` staff account with role `authorities` receives
+an alert for each code request. Code delivery copies the complete teller text
+after the configured alert header; unknown, invalid, and throttled requests
+report that no text was sent. Its phone must differ from teller phones. The
+account has no admin or handler privileges, no published default password,
+and the programmer configures its number with `cargo authorities-phone <+PHONE>`.
+The `bank-authorities` maintenance binary requires the `programmer-tools`
+feature and is excluded from normal GUI builds. This design assumes system
+users have access only to the GUI. The programmable interface, source code,
+Cargo commands, and maintenance tools are accessible only to the trusted
+programmer. The command requires its separate programmer PIN (`0000`),
+entered through a hidden terminal prompt. A salted Argon2id hash lives in
+`.programmer-pin.secret` in the source workspace, outside the database.
+The actual secret file is git-ignored and provisioned with owner-only Unix
+permissions. The programmer retains this maintenance key; it and its
+provisioning example are excluded from bank handover. It is used only when
+the bank requests programmer intervention, and is never handed to bank staff.
+This custody rule covers the programmer maintenance key. The GUI still
+requires its normal `atm.key` runtime file. Wrong or absent PIN input and missing/corrupt secret files fail
+closed without changing the number. No staff session, staff password, or
+phone verification is needed. The command writes `bank-authorities-phone.txt`
+beside the database. It trusts filesystem access
+under the bank's OS account. The app reads it at startup and before alerts;
+changes are encrypted in the authorities' staff record and audit logged.
+Teller number changes continue to require their existing authentication.
+Code delivery fails closed if the authorities number is
+missing or its alert cannot be written. A user-supplied recovery number must
+match a verified teller phone; it cannot replace the stored number. Direct
+database edits remain blocked by the existing seal before any migration or
+phone lookup proceeds. The local file model assumes the bank's operating
+system account and key remain trusted.
+
 Method, as taught in Lecture 1:
 
 1. **Policy**: what must the system guarantee?
@@ -465,6 +519,13 @@ the tests are what catch it. The only network code is one short function
 reviewer has one place to check what the program sends out.
 
 ## 6. Assumptions
+
+- System users have access only to the GUI. The programmable interface,
+  source code, Cargo commands, and maintenance tools are accessible only to
+  the programmer. Programmer maintenance commands therefore do not use
+  teller or bank account authentication. They require the separate programmer
+  PIN; access separation and control of the source/secret files remain the
+  trust boundary for these commands.
 
 - The ATM runs on one computer, under one OS account that only the bank controls.
 - Nobody can read or change the running program's memory (a debugger, or a

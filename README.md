@@ -102,8 +102,110 @@ balance without a log entry, as someone editing the records would. Sign in as
 the Teller Admin: the check fails, names the account, and the ATM goes out of
 service until the teller resumes it. Delete `atm-test.*` to run it again.
 
-**Network:** only the Teller Admin's **Check today's rates** button goes
-online. Nothing listens on a network port.
+**Network:** only the Teller Admin's **Check today's rates** button uses
+HTTPS. Phone code delivery uses local files. Nothing listens on a network port.
+
+### Teller cell phone sign-in
+
+The programmer changes the authorities number from the codebase with Cargo:
+
+```sh
+cargo authorities-phone +12125550199
+```
+
+Use the intended number, including `+` and country code. If the GUI's bank
+database is in a different folder:
+
+```sh
+cargo authorities-phone +12125550199 --directory /path/to/bank-folder
+```
+
+The full command behind the alias is:
+
+```sh
+cargo run --features programmer-tools --bin bank-authorities -- +12125550199
+```
+
+The command prompts for **Programmer PIN** (currently **`0000`**). Input is
+hidden in a real terminal. It verifies a salted Argon2id hash in
+`.programmer-pin.secret` in the source workspace, outside the database.
+The actual secret file is git-ignored and has owner-only permissions on Unix.
+It is already provisioned in this workspace. For a fresh checkout, provision
+it from the hashed example (macOS/Linux):
+
+```sh
+cp programmer-pin.secret.example .programmer-pin.secret
+chmod 600 .programmer-pin.secret
+```
+
+The example contains the hash for PIN `0000`. A missing, unreadable, or
+malformed secret file causes the command to fail; it never silently resets
+the PIN. Wrong or absent PIN input leaves the phone configuration unchanged.
+The PIN is entered at the prompt, never as a command-line argument.
+
+**Custody and intervention:** the programmer retains the maintenance key
+(`.programmer-pin.secret`). It is not handed over to the bank, and neither
+it nor its provisioning example is included in the bank's GUI delivery.
+The programmer uses this key only when the bank requests programmer
+intervention. Bank staff receive the GUI and do not use maintenance keys
+or Cargo commands. The ATM's `atm.key` remains a required runtime file for
+the GUI.
+
+No teller or bank account login is required. The `bank-authorities` binary
+is excluded from normal GUI builds and enabled by `programmer-tools`.
+System users have access only to the GUI. The programmable interface,
+including source code, command-line maintenance tools, and Cargo commands,
+is accessible only to the programmer.
+
+The command validates the number and atomically writes the git-ignored
+`bank-authorities-phone.txt` beside the bank database (current folder by
+default). It can run before the bank exists. The app imports changes at
+startup or before the next alert, encrypts the number in the authorities'
+staff row, and records the change in the signed log. The authorities number
+must differ from teller numbers. If the file is absent, the stored number
+remains in use. The programmer PIN protects the maintenance command; source
+and local configuration files remain under programmer control.
+
+Register the teller number separately under **My password → Cell phone
+recovery**, using the teller's current password and the delivered code.
+On the sign-in screen, **Forgot staff ID or password?** signs in using that
+registered phone and a fresh code. The password stays unchanged.
+
+Authentication codes are written to a text file beside the bank database,
+using the normalized phone number as its name: for `+1 (212) 555-1234`, open
+`+12125551234.txt`. The file contains the six-digit code and is replaced when
+a fresh code is issued. This works in both normal and demo mode; no SMS
+provider or network setup is needed. Read the file, then enter its code in
+the verification field. CLI enrollment is teller menu option **19**; enter
+**/phone** at the teller username prompt for phone sign-in.
+
+Codes expire after five minutes, work once, and allow five verification
+attempts. Requests are limited to one per minute and three per fifteen-minute
+window per teller, including delivery failures. Phone enrollment requires
+both the current password and verification of the new number. Recovery data
+is encrypted and covered by the existing database seal; phone numbers and
+codes stay out of the audit log. Verified phone numbers are AES-GCM encrypted
+in `staff.phone_enc`, alongside `username` and `password_hash`. Version 6
+banks migrate automatically to version 7 after verifying their original seal
+and anchor; existing verified teller numbers, usernames, passwords, IDs and
+login counters are preserved.
+
+Every phone-code request updates the authorities' `<phone-number>.txt` file.
+When a code is delivered, the alert contains the exact teller text with this
+header:
+
+> Alert! A teller has failed to bypass PIN verification and is attempting phone verification. Please verify the phone number. The requested text sent to them: {the text that the supposed teller received}
+
+Requests for unregistered or invalid numbers and throttled requests also
+produce an alert explaining that no text was sent. A different number cannot
+receive a teller code. Phone verification is unavailable until the authorities
+number is configured, and delivery failure at the authorities file prevents
+issuing a valid code. The authorities account has notification duties and no
+Teller Admin or Cash Handler permissions.
+
+Fresh demo banks include teller phone `+12125550101` and authorities phone
+`+12125550199`. Real numbers are entered in the
+teller settings and the programmer configuration file respectively.
 
 ## 3. Test
 

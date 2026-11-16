@@ -338,6 +338,7 @@ dependencies = [
  "hmac",
  "rpassword",
  "rusqlite",
+ "serde",
  "serde_json",
  "sha2",
  "ureq",

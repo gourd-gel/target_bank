@@ -230,6 +230,10 @@ export global Bank {
     callback setup(string, string, string, string, string, string) -> bool;
 
     callback staff-login(string, string);
+    callback phone-request(string);
+    callback phone-login(string, string);
+    callback phone-enroll(string, string);
+    callback phone-confirm(string);
     callback staff-logout();
     /// Returns true when the password changed (the form then clears itself).
     callback change-password(string, string, string) -> bool;

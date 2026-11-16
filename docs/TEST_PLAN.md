@@ -3,6 +3,58 @@
 What to test by hand before the demo, and what the automated tests already
 cover. Every step uses the demo bank, so nothing here needs real data.
 
+## Cell phone recovery
+
+1. As the programmer, run `cargo authorities-phone +12125550199` in the
+   source workspace. Use `--directory /path/to/bank-folder` when needed.
+   Enter `0000` at the Programmer PIN prompt. Confirm no teller/bank account
+   is required and the authorities configuration file is created, including
+   before a bank exists. On a real terminal the PIN must not be echoed.
+   Then sign in as the teller and open **My password → Cell phone recovery**.
+2. Enter a phone with country code and the current password. Send a code;
+   open `<normalized-phone>.txt` beside the database and verify its code.
+3. Sign out, choose **Forgot staff ID or password?**, enter the same phone,
+   and request a code after the one-minute resend interval.
+4. Sign in with the code and confirm the normal teller console opens.
+5. Sign out and try the same code again: it must fail. Unknown phones and
+   codes with five failed attempts must also fail. Expired codes must fail.
+6. Start replacing the enrolled phone but do not verify the new one. The
+   original phone must remain registered.
+7. Open the authorities' phone-number `.txt` file after sending a code. It
+   must contain the exact alert header and a copy of the teller's code text.
+8. Request a code for an unknown number, a malformed number, and during the
+   resend pause: each produces an authorities alert but no new teller code.
+9. Make the authorities destination unwritable: no usable code may be issued.
+10. While signed out, run `cargo authorities-phone +12125550198`.
+    The next request must alert the new destination without requesting a
+    teller password. The command must require the separate programmer PIN.
+    Wrong PIN, empty input, and missing or corrupt `.programmer-pin.secret`
+    must exit unsuccessfully and leave the previous configuration unchanged.
+    Invalid phone input must also leave the configuration unchanged. Confirm the GUI has no authorities
+    configuration control.
+11. Reopen a sealed version 6 bank: existing phones move into staff records,
+    credentials stay valid, and the migrated bank reopens with its new seal.
+
+Automated checks in `src/recovery.rs` cover enrollment proof, session checks,
+number validation, single use, expiry, attempt limits, resend throttling,
+encrypted database storage, text-file delivery, generic unknown-phone responses, replacement, password
+cooldown recovery, and the automatic integrity check. No SMS service is used.
+
+`tests/programmer_tools.rs` checks the maintenance binary with no bank or
+accounts, correct and incorrect programmer PINs, absence of PIN echo,
+replacement of a saved number, rejection of invalid input, and missing or
+corrupt secret files. The secret contains a salted hash, not the plain PIN.
+Run it with `cargo test --features programmer-tools --test programmer_tools`.
+The recovery tests verify configuration imports and alert routing without a
+staff session. `cargo authorities-phone --help` checks the Cargo alias.
+
+## Bank handover and maintenance key custody
+
+Verify that the bank's GUI delivery excludes `.programmer-pin.secret`, its
+provisioning example, and programmer-only maintenance tools. The programmer
+retains the maintenance key and uses it only when the bank requests programmer
+intervention. The GUI's required runtime `atm.key` remains with the application.
+
 ## 0. Setup
 
 ```

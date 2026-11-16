@@ -91,6 +91,70 @@ pub fn connect(app: &Rc<App>, window: &AppWindow) {
     });
 
     let a = app.clone();
+    bank.on_phone_request(move |phone| {
+        a.touch();
+        let result = auth::recovery::request_code(&mut a.atm(), &phone);
+        match result {
+            Ok(message) => a.notice(message),
+            Err(e) => a.error(e),
+        }
+    });
+
+    let a = app.clone();
+    bank.on_phone_login(move |phone, code| {
+        a.touch();
+        let code = Zeroizing::new(code.to_string());
+        let result = auth::recovery::login(&mut a.atm(), &phone, &code);
+        match result {
+            Ok(session) => {
+                let window = a.window();
+                let bank = window.global::<Bank>();
+                bank.set_staff_id(session.actor().trim_start_matches("admin:").into());
+                bank.set_signin_problem(session.integrity_problem().unwrap_or("").into());
+                let mut st = a.state();
+                st.admin = Some(session);
+                a.teller_tab_with(&mut st, tab::ACCOUNTS);
+            }
+            Err(AtmError::AuthFailed) => {
+                a.error("Phone sign-in failed. Check the phone and code, or request a new code later.")
+            }
+            Err(e) => a.error(e),
+        }
+    });
+
+    let a = app.clone();
+    bank.on_phone_enroll(move |password, phone| {
+        a.touch();
+        let password = Zeroizing::new(password.to_string());
+        let st = a.state();
+        let result = st
+            .admin
+            .as_ref()
+            .ok_or(AtmError::SessionExpired)
+            .and_then(|s| auth::recovery::enroll(&mut a.atm(), s, &password, &phone));
+        match result {
+            Ok(message) => a.notice(message),
+            Err(e) => a.error(e),
+        }
+    });
+
+    let a = app.clone();
+    bank.on_phone_confirm(move |code| {
+        a.touch();
+        let code = Zeroizing::new(code.to_string());
+        let st = a.state();
+        let result = st
+            .admin
+            .as_ref()
+            .ok_or(AtmError::SessionExpired)
+            .and_then(|s| auth::recovery::confirm_enrollment(&mut a.atm(), s, &code));
+        match result {
+            Ok(()) => a.notice("Phone verified. You can now use it to recover teller sign-in."),
+            Err(e) => a.error(e),
+        }
+    });
+
+    let a = app.clone();
     bank.on_staff_logout(move || {
         let mut st = a.state();
         a.go_welcome(&mut st, "Signed out.");

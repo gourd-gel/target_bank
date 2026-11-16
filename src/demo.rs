@@ -18,6 +18,8 @@ use crate::{Atm, db};
 /// Demo staff logins. PUBLIC, for testing only.
 pub const TELLER: (&str, &str) = ("teller", "teller-demo-2026");
 pub const HANDLER: (&str, &str) = ("cashier", "cashier-demo-2026");
+pub const TELLER_PHONE: &str = "+12125550101";
+pub const AUTHORITIES_PHONE: &str = "+12125550199";
 
 /// One sample person: name, DOB, PIN, short label, what makes them interesting.
 struct Person {
@@ -178,6 +180,7 @@ pub fn seed(conn: &mut Atm) -> Result<Vec<Login>> {
     db::mark_demo(&tx)?;
     tx.commit()?;
     auth::first_run_setup(conn, TELLER.0, TELLER.1, HANDLER.0, HANDLER.1)?;
+    auth::recovery::seed_demo_phones(conn, TELLER.0, TELLER_PHONE, AUTHORITIES_PHONE)?;
     let admin = auth::login_admin(conn, TELLER.0, TELLER.1)?;
     let handler = auth::login_handler(conn, HANDLER.0, HANDLER.1)?;
 

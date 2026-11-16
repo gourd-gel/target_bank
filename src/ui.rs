@@ -489,10 +489,17 @@ fn print_rows_brief(rows: &[Row]) {
 // ---------------------------------------------------------------------------
 
 fn admin_flow(atm: &mut Atm) -> Result<()> {
+    println!("Forgot your staff ID or password? Enter /phone to sign in with your cell phone.");
     let username = input::read_line("Admin username: ")?;
-    let password = input::read_secret("Password: ")?;
-    let session = auth::login_admin(atm, &username, &password)?;
-    drop(password);
+    let session = if username == "/phone" {
+        let phone = input::read_line("Registered cell phone (with + and country code): ")?;
+        println!("{}", auth::recovery::request_code(atm, &phone)?);
+        let code = input::read_secret("Phone verification code: ")?;
+        auth::recovery::login(atm, &phone, &code)?
+    } else {
+        let password = input::read_secret("Password: ")?;
+        auth::login_admin(atm, &username, &password)?
+    };
     service_banner(atm, &session)?;
     let result = admin_menu(atm, &session);
     let logged_out = auth::logout_admin(atm, session);
@@ -551,6 +558,7 @@ fn admin_menu(atm: &mut Atm, s: &AdminSession) -> Result<()> {
         println!(" 16) Approve a larger amount for today (customer at the counter)");
         println!(" 17) Accounts on hold for unusual activity / release");
         println!(" 18) Halt the ATM / resume service");
+        println!(" 19) Register cell phone for forgotten credentials");
         println!("  0) Log out");
         let choice = read_choice()?;
         let result = match choice.as_str() {
@@ -583,8 +591,15 @@ fn admin_menu(atm: &mut Atm, s: &AdminSession) -> Result<()> {
             "16" => raise_limit(atm, s),
             "17" => review_holds(atm, s),
             "18" => halt_or_resume(atm, s),
+            "19" => {
+                let phone = input::read_line("Cell phone (with + and country code): ")?;
+                let password = input::read_secret("Current password: ")?;
+                println!("{}", auth::recovery::enroll(atm, s, &password, &phone)?);
+                let code = input::read_secret("Phone verification code: ")?;
+                auth::recovery::confirm_enrollment(atm, s, &code).map(|_| println!("Phone verified."))
+            }
             "0" => return Ok(()),
-            _ => Err(AtmError::InvalidInput("choose 0 to 18")),
+            _ => Err(AtmError::InvalidInput("choose 0 to 19")),
         };
         run_action(result)?;
     }

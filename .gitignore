@@ -2,3 +2,15 @@
 *.db
 *.db-journal
 *.key
+
+# Phone authentication code deliveries
+/+*.txt
+/+*.tmp
+
+# Programmer-managed local contact number
+/bank-authorities-phone.txt
+# /.programmer-pin.secret
+/numbers.txt
+/programmer-pin.secret.example
+/bank-authorities-phone.txt.example.txt
+

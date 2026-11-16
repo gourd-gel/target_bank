@@ -1,0 +1,2 @@
+[alias]
+authorities-phone = "run --quiet --features programmer-tools --bin bank-authorities --"

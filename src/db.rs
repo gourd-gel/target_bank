@@ -34,7 +34,7 @@ pub const CASH_MAXIMUM: Cents = Cents::from_dollars(100_000);
 /// Physical capacity. Customer deposits can't push the machine past this.
 pub const PHYSICAL_CAPACITY: Cents = Cents::from_dollars(150_000);
 /// Bump when the schema changes in a way older databases can't use.
-const SCHEMA_VERSION: &str = "6";
+const SCHEMA_VERSION: &str = "7";
 /// Settings keys for the two fees: (percent in basis points, minimum in US cents).
 /// Each fee is the higher of the two. See `fx::Fee`.
 pub(crate) const EXCHANGE_FEE_KEYS: (&str, &str) = ("exchange_fee_bp", "exchange_fee_min_cents");
@@ -53,8 +53,9 @@ CREATE TABLE IF NOT EXISTS meta (
 CREATE TABLE IF NOT EXISTS staff (
     id              INTEGER PRIMARY KEY,
     username        TEXT    NOT NULL UNIQUE,
-    role            TEXT    NOT NULL CHECK (role IN ('admin', 'handler')),
+    role            TEXT    NOT NULL CHECK (role IN ('admin', 'handler', 'authorities')),
     password_hash   TEXT    NOT NULL,
+    phone_enc       BLOB,                     -- verified cell phone, AES-GCM encrypted
     failed_attempts INTEGER NOT NULL DEFAULT 0 CHECK (failed_attempts >= 0),
     cooldown_until  TEXT                      -- UTC; NULL = no cooldown
 ) STRICT;
@@ -267,7 +268,7 @@ fn check_version_and_key(conn: &Connection) -> Result<()> {
         "this database was made by a different version; delete atm.db, atm.key and atm.anchor to start over";
     // No meta table at all: not a database this version made.
     let version = meta(conn, "schema_version").map_err(|_| AtmError::NotAllowed(START_OVER))?;
-    if version.as_deref() != Some(SCHEMA_VERSION) {
+    if !matches!(version.as_deref(), Some("6") | Some(SCHEMA_VERSION)) {
         return Err(AtmError::NotAllowed(START_OVER));
     }
     let expected = keys::fingerprint()?;

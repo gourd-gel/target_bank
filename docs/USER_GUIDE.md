@@ -3,6 +3,11 @@
 This guide walks through every screen of the ATM, step by step, for each of
 the three kinds of users. You don't need to know any code to follow it.
 
+**Access model:** system users have access only to the GUI. The programmable
+interface, source code, Cargo commands, and maintenance tools are accessible
+only to the programmer. Command-line examples in this guide are programmer
+instructions; they are not part of the GUI users' workflow.
+
 - [1. Before you start](#1-before-you-start)
 - [2. Using the screens](#2-using-the-screens)
 - [3. Customers](#3-customers)
@@ -48,6 +53,63 @@ The ATM keeps its data in three files in this folder: `atm.db` (the data),
 version of the data, so an older copy of `atm.db` can't be put back). Keep
 them together: the ATM won't open if one of them is missing. To start over,
 close the ATM and delete all three.
+
+### Teller sign-in with a cell phone
+
+The programmer runs this command from the source workspace:
+
+```sh
+cargo authorities-phone +12125550199
+```
+
+Replace the sample with the authorities number. Add
+`--directory /path/to/bank-folder` if the GUI stores its database elsewhere.
+Enter **`0000`** at the hidden **Programmer PIN** prompt. This is a separate
+programmer PIN; no teller or bank sign-in is required. Its salted hash is
+stored in `.programmer-pin.secret` in the source workspace, never in the
+database. A fresh checkout needs this file provisioned from
+`programmer-pin.secret.example` as described in the README. Wrong PIN input
+or a missing/invalid secret file prevents the number change.
+
+The maintenance key (`.programmer-pin.secret`) stays with the programmer and
+is not handed over to the bank. The key and its provisioning example are
+excluded from the bank's GUI delivery. It is used only when the bank requests
+programmer intervention; bank staff do not handle this key themselves.
+
+This command is accessible only to the programmer through the programmable
+interface. System users have access only to the GUI, which has no
+authorities-number control.
+
+The command saves `bank-authorities-phone.txt` beside the database. Changes
+take effect at startup or before the next alert and are then saved encrypted
+in the database. Existing stored numbers remain in use if the file is absent.
+
+To register a teller number, sign in and open **My password → Cell phone
+recovery**. Enter the teller phone and current password, then click
+**Send code**. Open the phone-number `.txt` file beside the bank database,
+type its code, and click **Verify phone**. A new phone does not replace the
+old one until verified.
+
+If you later forget your staff ID or password, choose **Forgot staff ID or
+password?** on the Teller Admin sign-in screen. Enter that registered phone,
+click **Send code**, and enter the code from its `.txt` file to sign in. The
+code expires after five minutes and works once. After five unsuccessful code attempts,
+request another code when allowed. Wait at least one minute between requests;
+at most three can be requested in a fifteen-minute window. This signs you in
+without changing your password.
+
+For example, `+1 (212) 555-1234` uses `+12125551234.txt`. Both normal and
+practice mode write the code to this file. No SMS provider is required. A
+phone must already have been registered and verified before it can be used
+to sign in.
+
+Every phone-code request alerts Bank Authorities. Successful delivery copies
+the teller's exact text after the requested alert header. Unregistered numbers,
+invalid input, and throttled requests generate an alert saying no text was
+sent. A missing authorities number or failed alert delivery prevents issuing
+a usable code. Fresh demo banks already register `+12125550101` for the teller
+and `+12125550199` for Bank Authorities. CLI option **19** registers the teller number; authorities configuration is
+managed with `cargo authorities-phone <+PHONE>`.
 
 ### If the ATM won't start
 
@@ -631,7 +693,7 @@ hidden as you type. The same rules and timeouts apply.
 | Role | Options |
 |---|---|
 | Customer | 1 Balance · 2 Daily limits · 3 Withdraw (1 one bill type, 2 mostly one type, 3 fewest bills) · 4 Deposit · 5 Transfer (pick a recent account or type one) · 6 Recent transactions · 7 Family (guardians only; 5 and 6 move money to the child or back) · 8 Change PIN. Other banks' cards see 1-3 only. |
-| Teller Admin | 1 Create customer · 2 Add joint holder · 3 Open youth account · 4 Add guardian · 5 Account audit log · 6 Set daily limits · 7 Locked cards / unlock · 8 Freeze or unfreeze · 9 Verify log + balances · 10 List accounts · 11 All recent events · 12 Close account · 13 Change my password · 14 Exchange rates and fees (set, pause, resume, history; built with `--features online-rates`, 8 checks today's rates and asks to approve) · 15 Register another bank's card · 16 Approve a larger amount for today · 17 Accounts on hold / release · 18 Halt the ATM / resume service |
+| Teller Admin | 1 Create customer · 2 Add joint holder · 3 Open youth account · 4 Add guardian · 5 Account audit log · 6 Set daily limits · 7 Locked cards / unlock · 8 Freeze or unfreeze · 9 Verify log + balances · 10 List accounts · 11 All recent events · 12 Close account · 13 Change my password · 14 Exchange rates and fees (set, pause, resume, history; built with `--features online-rates`, 8 checks today's rates and asks to approve) · 15 Register another bank's card · 16 Approve a larger amount for today · 17 Accounts on hold / release · 18 Halt the ATM / resume service · 19 Register teller phone |
 | Cash Handler | 1 View cash · 2 Restock · 3 Remove bills above the maximum · 4 Reset to maximum · 5 Change my password |
 
 The command line prints a receipt after every transaction (it doesn't ask)
